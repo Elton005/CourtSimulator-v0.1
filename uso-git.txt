@@ -1,0 +1,38 @@
+Después de modificar archivos:
+git status
+Esto muestra qué cambió.
+
+Añade los cambios:
+git add . 
+
+Crea un commit, que es una versión guardada localmente:
+git commit -m "Descripción breve de los cambios"
+
+Descarga cambios nuevos de GitHub antes de subir:
+git pull
+
+Sube tus commits:
+git push
+
+El flujo normal sería:
+git status
+git add .
+git commit -m "Corrige el cálculo del resultado"
+git pull
+git push
+
+
+para deshacer toda la mierda que acaba de hacer la IA hasta el commit anterior
+Primero revisa qué cambios tienes:
+git status
+
+Deshacer cambios no confirmados
+Para volver todos los archivos modificados al último commit:
+git restore .
+
+Esto elimina cambios no guardados en archivos rastreados.
+Si también tienes cambios preparados con git add, usa:
+git reset --hard HEAD
+
+Advertencia: estos comandos eliminan definitivamente esos cambios.
+git clean -n
