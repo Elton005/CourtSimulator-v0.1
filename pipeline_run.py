@@ -1,197 +1,326 @@
 """
-scraper/sources/tennisexplorer/match_detail.py
+pipeline_run.py
 
-Extrae de una página match-detail: ronda, superficie, cuotas de cierre
-(Home/Away) y datos de perfil de ambos jugadores.
+Orquesta el pipeline completo para un día:
+  1. results.run(fecha)          -> lista de partidos (IDs, jugadores, marcador preview)
+  2. match_detail.parse_match_detail(id) -> ronda, superficie, cuotas de cierre, bio
+  3. Inserta/actualiza en Supabase: players, player_aliases, tournaments, matches, closing_odds
+  4. Registra la corrida en scrape_runs
 
-Estrategia: trabaja sobre el TEXTO PLANO de la página (vía
-BeautifulSoup(html).get_text()) para la cabecera y las cuotas, y con
-pandas.read_html() para las tablas de bio/H2H -- ambos métodos son
-más robustos que depender de clases CSS específicas, que todavía no
-hemos confirmado con el HTML crudo real.
+Requiere la variable de entorno SUPABASE_DB_URL (connection string de
+Settings > Database en Supabase). NUNCA hardcodear la clave aquí.
 
-Falta confirmar (marcado con TODO):
-- La etiqueta exacta que usa TennisExplorer para rondas de clasificación
-  (qualy). Necesitamos ver un ejemplo real de un partido de qualy.
-- Si "Average odds" bajo Home/Away es siempre la PRIMERA ocurrencia de
-  ese texto en la página (asumido aquí, a confirmar con más ejemplos).
+Uso:
+    python pipeline_run.py 2026-08-31
 """
 
-import re
-from dataclasses import dataclass, field
-from io import StringIO
+import os
+import sys
+import time
+import random
+import json
+import logging
+from datetime import date, datetime, timedelta
 
+import psycopg2
+import psycopg2.extras
 import requests
-import pandas as pd
-from bs4 import BeautifulSoup
+from dotenv import load_dotenv
 
-HEADERS = {
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36"
-}
+import results
+import match_detail
 
-HEADER_RE = re.compile(
-    r"(\d{2}\.\d{2}\.\d{4})\s*,\s*(\d{2}:\d{2}|--:--)\s*,\s*(.+?)\s*,\s*"
-    r"([\w. -]*?(?:round|Final|Semifinal|Quarterfinal|Qualification|Q\d))\s*,\s*"
-    r"([\w/]+)"
-)
+load_dotenv(override=True)  # el .env manda siempre, incluso si ya hay una variable de entorno vieja del sistema
 
-SURFACE_MAP = {
-    "hard": "hard",
-    "clay": "clay",
-    "grass": "grass",
-    "indoors": "indoor",
-    "indoor": "indoor",
-}
+logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+log = logging.getLogger(__name__)
 
-BIO_FIELDS = ["Singles ranking", "Birthdate", "Height", "Weight", "Plays", "Turned pro"]
+MIN_DELAY = 2.0
+MAX_DELAY = 3.5
+CHECKPOINT_FILE = "backfill_checkpoint.json"
 
 
-@dataclass
-class MatchDetail:
-    match_id: int
-    date_str: str | None = None
-    time_str: str | None = None
-    tournament: str | None = None
-    round_name: str | None = None
-    is_qualifying: bool = False
-    surface: str | None = None
-    closing_odds_a: float | None = None
-    closing_odds_b: float | None = None
-    player_a_bio: dict = field(default_factory=dict)
-    player_b_bio: dict = field(default_factory=dict)
+def load_checkpoint() -> set[str]:
+    if not os.path.exists(CHECKPOINT_FILE):
+        return set()
+    with open(CHECKPOINT_FILE, "r") as f:
+        return set(json.load(f))
 
 
-def fetch_match_detail_html(match_id: int) -> str:
-    url = f"https://www.tennisexplorer.com/match-detail/?id={match_id}"
-    resp = requests.get(url, headers=HEADERS, timeout=15)
-    resp.raise_for_status()
-    return resp.text
+def save_checkpoint(done_days: set[str]):
+    with open(CHECKPOINT_FILE, "w") as f:
+        json.dump(sorted(done_days), f)
 
 
-def parse_header(page_text: str) -> dict:
-    match = HEADER_RE.search(page_text)
-    if not match:
-        # DEBUG temporal: busca "round" en el texto real para ver el
-        # contexto exacto que produce BeautifulSoup sobre el HTML real.
-        idx = page_text.lower().find("round")
-        contexto = page_text[max(0, idx - 100):idx + 100] if idx != -1 else "(no se encontró la palabra 'round' en absoluto)"
-        print("---- DEBUG: contexto real alrededor de 'round' ----")
-        print(repr(contexto))
-        print("----------------------------------------------------")
-        raise ValueError("No se encontró la línea de cabecera (fecha/ronda/superficie)")
-    date_str, time_str, tournament, round_name, surface = match.groups()
-    return {
-        "date_str": date_str,
-        "time_str": time_str,
-        "tournament": tournament.strip(),
-        "round_name": round_name.strip(),
-        "is_qualifying": "qual" in round_name.lower(),
-        "surface": SURFACE_MAP.get(surface.lower().strip()),
-    }
-
-
-def parse_closing_odds(page_text: str) -> tuple[float | None, float | None]:
+def fetch_with_backoff(fetch_fn, *args, max_retries: int = 5, **kwargs):
     """
-    Busca la primera línea 'Average odds X Y', que en el orden habitual
-    de la página corresponde al mercado Home/Away (cuota de cierre).
+    Envuelve cualquier función de fetch (match_detail.fetch_match_detail_html,
+    results.fetch_results_html) con backoff exponencial ante 429/403/errores
+    de red. Si sigue fallando tras max_retries, deja que el error suba.
     """
-    match = re.search(r"Average odds\s+([\d.]+)\s+([\d.]+)", page_text)
-    if not match:
-        return None, None
-    return float(match.group(1)), float(match.group(2))
+    delay = MIN_DELAY
+    for attempt in range(max_retries):
+        try:
+            return fetch_fn(*args, **kwargs)
+        except requests.HTTPError as exc:
+            status = exc.response.status_code if exc.response is not None else None
+            if status in (429, 403):
+                wait = delay * (2 ** attempt) + random.uniform(0, 1)
+                log.warning("Status %s recibido, esperando %.1fs antes de reintentar (intento %d/%d)",
+                            status, wait, attempt + 1, max_retries)
+                time.sleep(wait)
+                continue
+            raise
+    raise RuntimeError(f"Agotados los reintentos tras recibir bloqueos repetidos ({max_retries})")
 
 
-def parse_player_bio_tables(html: str) -> tuple[dict, dict]:
-    """
-    Usa pandas.read_html para encontrar la tabla de bio (ranking,
-    nacimiento, altura, peso, mano dominante, año pro) sin depender
-    de clases CSS -- solo necesita que exista un <table> real.
-    """
-    tables = pd.read_html(StringIO(html))
-    bio_table = None
-    for t in tables:
-        text_blob = t.to_string()
-        if any(field in text_blob for field in BIO_FIELDS):
-            bio_table = t
-            break
-
-    if bio_table is None:
-        return {}, {}
-
-    player_a_bio, player_b_bio = {}, {}
-    for _, row in bio_table.iterrows():
-        label = str(row.iloc[2]).strip() if len(row) > 2 else ""
-        if label in BIO_FIELDS:
-            player_a_bio[label] = row.iloc[1]
-            player_b_bio[label] = row.iloc[3] if len(row) > 3 else None
-
-    return clean_bio(player_a_bio), clean_bio(player_b_bio)
+def polite_sleep():
+    time.sleep(random.uniform(MIN_DELAY, MAX_DELAY))
 
 
-def _clean_or_none(value) -> str | None:
-    value = str(value).strip()
-    return None if value in ("-", "", "nan") else value
+def get_connection():
+    db_url = os.environ.get("SUPABASE_DB_URL")
+    if not db_url:
+        raise RuntimeError("Falta la variable de entorno SUPABASE_DB_URL")
+    return psycopg2.connect(db_url)
 
 
-def parse_ranking(raw) -> int | None:
-    value = _clean_or_none(raw)
-    if value is None:
-        return None
-    return int(value.rstrip("."))
+def get_or_create_player(cur, slug: str, name_guess: str, bio: dict, full_name: str | None) -> int:
+    cur.execute(
+        "SELECT player_id FROM player_aliases WHERE source = %s AND alias_name = %s",
+        ("tennisexplorer", slug),
+    )
+    row = cur.fetchone()
+
+    canonical_name = full_name or name_guess
+
+    if row:
+        player_id = row[0]
+        cur.execute(
+            """
+            UPDATE players SET
+                canonical_name = COALESCE(%s, canonical_name),
+                current_ranking = COALESCE(%s, current_ranking),
+                birth_date = COALESCE(%s, birth_date),
+                height_cm = COALESCE(%s, height_cm),
+                weight_kg = COALESCE(%s, weight_kg),
+                plays = COALESCE(%s, plays),
+                turned_pro = COALESCE(%s, turned_pro)
+            WHERE id = %s
+            """,
+            (
+                canonical_name,
+                bio.get("current_ranking"),
+                bio.get("birth_date"),
+                bio.get("height_cm"),
+                bio.get("weight_kg"),
+                bio.get("plays"),
+                bio.get("turned_pro"),
+                player_id,
+            ),
+        )
+        return player_id
+
+    cur.execute(
+        """
+        INSERT INTO players (canonical_name, current_ranking, birth_date, height_cm, weight_kg, plays, turned_pro)
+        VALUES (%s, %s, %s, %s, %s, %s, %s)
+        RETURNING id
+        """,
+        (
+            canonical_name,
+            bio.get("current_ranking"),
+            bio.get("birth_date"),
+            bio.get("height_cm"),
+            bio.get("weight_kg"),
+            bio.get("plays"),
+            bio.get("turned_pro"),
+        ),
+    )
+    player_id = cur.fetchone()[0]
+
+    cur.execute(
+        "INSERT INTO player_aliases (player_id, source, alias_name) VALUES (%s, %s, %s)",
+        (player_id, "tennisexplorer", slug),
+    )
+    return player_id
 
 
-def parse_birthdate(raw) -> str | None:
-    """
-    TennisExplorer usa el formato 'D. M. AAAA', ej. '21. 5. 1996'.
-    Devuelve 'AAAA-MM-DD' (ISO), listo para la columna birth_date.
-    """
-    value = _clean_or_none(raw)
-    if value is None:
-        return None
-    day, month, year = [p.strip().rstrip(".") for p in value.split(".") if p.strip()]
-    return f"{int(year):04d}-{int(month):02d}-{int(day):02d}"
+def get_or_create_tournament(cur, name: str, year: int | None, surface: str | None, level: str) -> int:
+    if year is not None:
+        cur.execute(
+            "SELECT id FROM tournaments WHERE name = %s AND EXTRACT(YEAR FROM start_date) = %s LIMIT 1",
+            (name, year),
+        )
+    else:
+        cur.execute("SELECT id FROM tournaments WHERE name = %s AND start_date IS NULL LIMIT 1", (name,))
+
+    row = cur.fetchone()
+    if row:
+        return row[0]
+
+    approx_start_date = date(year, 1, 1) if year else None
+    cur.execute(
+        "INSERT INTO tournaments (name, surface, level, start_date) VALUES (%s, %s, %s, %s) RETURNING id",
+        (name, surface, level, approx_start_date),
+    )
+    return cur.fetchone()[0]
 
 
-def parse_cm(raw) -> int | None:
-    value = _clean_or_none(raw)
-    if value is None:
-        return None
-    return int(value.replace("cm", "").strip())
+def upsert_match(cur, tournament_id, player_a_id, player_b_id, round_name, is_qualifying,
+                  match_date, winner_id, sets, source_match_id) -> int:
+    cur.execute(
+        """
+        INSERT INTO matches (
+            tournament_id, player_a_id, player_b_id, round, is_qualifying,
+            match_date, status, winner_id, sets, source, source_match_id
+        )
+        VALUES (%s, %s, %s, %s, %s, %s, 'finished', %s, %s, 'tennisexplorer', %s)
+        ON CONFLICT (source, source_match_id) DO UPDATE SET
+            round = EXCLUDED.round,
+            is_qualifying = EXCLUDED.is_qualifying,
+            winner_id = EXCLUDED.winner_id,
+            sets = EXCLUDED.sets
+        RETURNING id
+        """,
+        (
+            tournament_id, player_a_id, player_b_id, round_name, is_qualifying,
+            match_date, winner_id, psycopg2.extras.Json(sets), source_match_id,
+        ),
+    )
+    return cur.fetchone()[0]
 
 
-def parse_kg(raw) -> int | None:
-    value = _clean_or_none(raw)
-    if value is None:
-        return None
-    return int(value.replace("kg", "").strip())
+def upsert_closing_odds(cur, match_id, player_id, odds):
+    if odds is None:
+        return
+    implied_probability = round(100 / odds, 2)
+    cur.execute(
+        """
+        INSERT INTO closing_odds (match_id, player_id, odds, implied_probability)
+        VALUES (%s, %s, %s, %s)
+        ON CONFLICT (match_id, player_id) DO UPDATE SET
+            odds = EXCLUDED.odds,
+            implied_probability = EXCLUDED.implied_probability,
+            captured_at = now()
+        """,
+        (match_id, player_id, odds, implied_probability),
+    )
 
 
-def clean_bio(bio: dict) -> dict:
-    return {
-        "current_ranking": parse_ranking(bio.get("Singles ranking")),
-        "birth_date": parse_birthdate(bio.get("Birthdate")),
-        "height_cm": parse_cm(bio.get("Height")),
-        "weight_kg": parse_kg(bio.get("Weight")),
-        "plays": _clean_or_none(bio.get("Plays")),
-        "turned_pro": _clean_or_none(bio.get("Turned pro")),
-    }
+def sets_to_jsonb(sets_a: list[dict], sets_b: list[dict]) -> list[dict]:
+    return [
+        {"a": a["games"], "b": b["games"]}
+        for a, b in zip(sets_a, sets_b)
+    ]
 
 
-def parse_match_detail(match_id: int, html: str) -> MatchDetail:
-    soup = BeautifulSoup(html, "html.parser")
-    page_text = soup.get_text(separator=" ", strip=True)
+def run_pipeline(target_date: date):
+    conn = get_connection()
+    conn.autocommit = False
+    cur = conn.cursor()
 
-    detail = MatchDetail(match_id=match_id)
-    detail.__dict__.update(parse_header(page_text))
-    detail.closing_odds_a, detail.closing_odds_b = parse_closing_odds(page_text)
-    detail.player_a_bio, detail.player_b_bio = parse_player_bio_tables(html)
+    cur.execute(
+        "INSERT INTO scrape_runs (source, data_type, status) VALUES (%s, %s, 'running') RETURNING id",
+        ("tennisexplorer", "results+detail"),
+    )
+    run_id = cur.fetchone()[0]
+    conn.commit()
 
-    return detail
+    rows_processed = 0
+    error_message = None
+
+    try:
+        match_rows = results.run(target_date)
+        log.info("Descubiertos %d partidos para %s", len(match_rows), target_date)
+
+        for row in match_rows:
+            try:
+                html = fetch_with_backoff(match_detail.fetch_match_detail_html, row.match_id)
+                detail = match_detail.parse_match_detail(row.match_id, html)
+
+                player_a_id = get_or_create_player(
+                    cur, row.player_a_slug, row.player_a_name,
+                    detail.player_a_bio, detail.player_a_full_name,
+                )
+                player_b_id = get_or_create_player(
+                    cur, row.player_b_slug, row.player_b_name,
+                    detail.player_b_bio, detail.player_b_full_name,
+                )
+
+                tournament_id = get_or_create_tournament(
+                    cur, row.tournament_name, row.tournament_year, detail.surface, row.level_guess
+                )
+
+                winner_id = player_a_id if len(row.sets_a) and sum(
+                    1 for a, b in zip(row.sets_a, row.sets_b) if a["games"] > b["games"]
+                ) > len(row.sets_a) / 2 else player_b_id
+
+                match_id = upsert_match(
+                    cur, tournament_id, player_a_id, player_b_id,
+                    detail.round_name, detail.is_qualifying,
+                    target_date, winner_id,
+                    sets_to_jsonb(row.sets_a, row.sets_b),
+                    row.match_id,
+                )
+
+                upsert_closing_odds(cur, match_id, player_a_id, detail.closing_odds_a)
+                upsert_closing_odds(cur, match_id, player_b_id, detail.closing_odds_b)
+
+                conn.commit()
+                rows_processed += 1
+                log.info("  OK %s vs %s (id=%s)", row.player_a_name, row.player_b_name, row.match_id)
+
+            except Exception as exc:
+                conn.rollback()
+                log.error("  Error en partido %s: %s", row.match_id, exc)
+
+            polite_sleep()
+        status = "success"
+
+    except Exception as exc:
+        status = "failed"
+        error_message = str(exc)
+        log.error("Error general del pipeline: %s", exc)
+
+    cur.execute(
+        """
+        UPDATE scrape_runs SET
+            finished_at = now(), status = %s, rows_scraped = %s, error_message = %s
+        WHERE id = %s
+        """,
+        (status, rows_processed, error_message, run_id),
+    )
+    conn.commit()
+    cur.close()
+    conn.close()
+
+    log.info("Pipeline terminado: %d partidos procesados, status=%s", rows_processed, status)
 
 
 if __name__ == "__main__":
-    for test_id in (3307389, 3303261):  # partido normal + partido de qualy
-        html = fetch_match_detail_html(test_id)
-        result = parse_match_detail(test_id, html)
-        print(result)
-        print()
+    if len(sys.argv) < 2:
+        print("Uso:")
+        print("  python pipeline_run.py YYYY-MM-DD                 (un solo día)")
+        print("  python pipeline_run.py YYYY-MM-DD YYYY-MM-DD       (rango, resumible)")
+        sys.exit(1)
+
+    start = datetime.strptime(sys.argv[1], "%Y-%m-%d").date()
+    end = datetime.strptime(sys.argv[2], "%Y-%m-%d").date() if len(sys.argv) > 2 else start
+
+    done_days = load_checkpoint()
+    current = start
+
+    while current <= end:
+        day_str = current.isoformat()
+        if day_str in done_days:
+            log.info("Saltando %s (ya procesado según checkpoint)", day_str)
+        else:
+            try:
+                run_pipeline(current)
+                done_days.add(day_str)
+                save_checkpoint(done_days)
+            except Exception as exc:
+                log.error("Día %s falló por completo, se puede reintentar después: %s", day_str, exc)
+                # No lo marcamos como hecho -- al volver a correr el script, se retoma aquí.
+        current += timedelta(days=1)

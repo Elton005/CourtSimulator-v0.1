@@ -36,12 +36,15 @@ class ResultRow:
     match_id: str
     tournament_name: str
     tournament_slug: str | None
+    tournament_year: int | None
     level_guess: str  # 'challenger' | 'futures' | 'main' -- preliminar, confirmar con match-detail
     time_str: str
     player_a_name: str
     player_a_slug: str
     player_b_name: str
     player_b_slug: str
+    sets_won_a: int
+    sets_won_b: int
     sets_a: list[dict] = field(default_factory=list)
     sets_b: list[dict] = field(default_factory=list)
     preview_odds_a: float | None = None
@@ -103,6 +106,7 @@ def parse_results_page(html: str) -> list[ResultRow]:
     rows: list[ResultRow] = []
     current_tournament_name = None
     current_tournament_slug = None
+    current_tournament_year = None
     current_is_doubles = False
     current_is_men = False
 
@@ -115,10 +119,16 @@ def parse_results_page(html: str) -> list[ResultRow]:
             t_link = tr.select_one("td.t-name a")
             if t_link:
                 current_tournament_name = t_link.get_text(strip=True)
-                current_tournament_slug = t_link["href"].strip("/").split("/")[0]
+                # href: /us-open/2026/atp-men/ -> ['us-open', '2026', 'atp-men']
+                href_parts = t_link["href"].strip("/").split("/")
+                current_tournament_slug = href_parts[0]
+                current_tournament_year = int(href_parts[1]) if len(href_parts) > 1 and href_parts[1].isdigit() else None
             else:
                 current_tournament_name = tr.select_one("td.t-name").get_text(strip=True)
                 current_tournament_slug = None
+                # Torneos sin link (ej. "Futures 2026") suelen traer el año en el propio nombre
+                year_match = re.search(r"(20\d{2})", current_tournament_name)
+                current_tournament_year = int(year_match.group(1)) if year_match else None
 
             type_span = tr.select_one('td.t-name span[class*="type-"]')
             type_class = type_span["class"][0] if type_span and type_span.get("class") else ""
@@ -148,6 +158,7 @@ def parse_results_page(html: str) -> list[ResultRow]:
                 "match_id": match_id_match.group(1) if match_id_match else None,
                 "player_a_name": link.get_text(strip=True),
                 "player_a_slug": slug_from_href(link["href"]),
+                "sets_won_a": int(tr.select_one("td.result").get_text(strip=True)),
                 "sets_a": [c for c in (parse_score_cell(td) for td in tr.select("td.score")) if c is not None],
                 "odds_a": float(coursew.get_text(strip=True)) if coursew and coursew.get_text(strip=True) else None,
                 "odds_b": float(course.get_text(strip=True)) if course and course.get_text(strip=True) else None,
@@ -162,6 +173,7 @@ def parse_results_page(html: str) -> list[ResultRow]:
                 continue
 
             sets_b = [c for c in (parse_score_cell(td) for td in tr.select("td.score")) if c is not None]
+            sets_won_b = int(tr.select_one("td.result").get_text(strip=True))
 
             level = guess_level(current_tournament_name)
             in_scope = level != "utr"  # UTR Pro Tennis Series queda fuera del scope
@@ -171,12 +183,15 @@ def parse_results_page(html: str) -> list[ResultRow]:
                     match_id=pending["match_id"],
                     tournament_name=current_tournament_name,
                     tournament_slug=current_tournament_slug,
+                    tournament_year=current_tournament_year,
                     level_guess=level,
                     time_str=pending["time_str"],
                     player_a_name=pending["player_a_name"],
                     player_a_slug=pending["player_a_slug"],
                     player_b_name=link.get_text(strip=True),
                     player_b_slug=slug_from_href(link["href"]),
+                    sets_won_a=pending["sets_won_a"],
+                    sets_won_b=sets_won_b,
                     sets_a=pending["sets_a"],
                     sets_b=sets_b,
                     preview_odds_a=pending["odds_a"],
