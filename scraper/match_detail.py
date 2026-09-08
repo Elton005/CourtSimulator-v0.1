@@ -20,6 +20,7 @@ Falta confirmar (marcado con TODO):
 import re
 from dataclasses import dataclass, field
 from io import StringIO
+from typing import Optional
 
 import requests
 import pandas as pd
