@@ -91,7 +91,7 @@ def parse_score_cell(td) -> dict:
     """
     sup = td.find("sup")
     tiebreak = int(sup.get_text(strip=True)) if sup and sup.get_text(strip=True) else None
-    direct_text = "".join(td.find_all(string=True, recursive=False)).strip()
+    direct_text = "".join(td.find_all(text=True, recursive=False)).strip()
     if not direct_text:
         return None
     return {"games": int(direct_text), "tiebreak": tiebreak}

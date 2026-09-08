@@ -30,9 +30,11 @@ HEADERS = {
 }
 
 HEADER_RE = re.compile(
-    r"(\d{2}\.\d{2}\.\d{4})\s*,\s*(\d{2}:\d{2}|--:--)\s*,\s*(.+?)\s*,\s*"
-    r"([\w. -]*?(?:round|Final|Semifinal|Quarterfinal|Qualification|Q\d))\s*,\s*"
-    r"([\w/]+)"
+    r"(\d{2}\.\d{2}\.\d{4})\s*,\s*"          # Fecha
+    r"(\d{2}:\d{2}|--:--)\s*,\s*"            # Hora
+    r"(.+?)\s*,\s*"                           # Torneo (no-greedy, pero...)
+    r"([\w. -]*?(?:round|Final|Semifinal|Quarterfinal|Qualification|Q\d))\s*,\s*" # Ronda
+    r"([\w/]+)"                               # Superficie
 )
 
 SURFACE_MAP = {
@@ -61,6 +63,8 @@ class MatchDetail:
     player_b_bio: dict = field(default_factory=dict)
     player_a_full_name: str | None = None
     player_b_full_name: str | None = None
+    player_a_photo: str | None = None  # ← NUEVO
+    player_b_photo: str | None = None  # ← NUEVO
 
 
 def fetch_match_detail_html(match_id: int) -> str:
@@ -70,40 +74,117 @@ def fetch_match_detail_html(match_id: int) -> str:
     return resp.text
 
 
-def parse_header(page_text: str) -> dict:
-    match = HEADER_RE.search(page_text)
-    if not match:
-        # DEBUG temporal: busca "round" en el texto real para ver el
-        # contexto exacto que produce BeautifulSoup sobre el HTML real.
-        idx = page_text.lower().find("round")
-        contexto = page_text[max(0, idx - 100):idx + 100] if idx != -1 else "(no se encontró la palabra 'round' en absoluto)"
-        print("---- DEBUG: contexto real alrededor de 'round' ----")
-        print(repr(contexto))
-        print("----------------------------------------------------")
-        raise ValueError("No se encontró la línea de cabecera (fecha/ronda/superficie)")
-    date_str, time_str, tournament, round_name, surface = match.groups()
-    return {
-        "date_str": date_str,
-        "time_str": time_str,
-        "tournament": tournament.strip(),
-        "round_name": round_name.strip(),
-        "is_qualifying": "qual" in round_name.lower(),
-        "surface": SURFACE_MAP.get(surface.lower().strip()),
-    }
-
-
-def parse_full_names(page_text: str) -> tuple[str | None, str | None]:
+def parse_header(soup: BeautifulSoup) -> dict:
     """
-    La página trae los nombres completos junto al marcador, ej:
-    'Gea Arthur ... 2 : 0 (6-3, 7-64) ... Nagal Sumit'
+    Extrae la cabecera del partido usando la estructura real del DOM de TennisExplorer.
+    Busca el div inmediatamente después del <h1 class="bg"> que contiene la info.
+    """
+    h1 = soup.find('h1', class_='bg')
+    if h1:
+        header_div = h1.find_next_sibling('div')
+        if header_div:
+            # Obtenemos el texto limpio de este div específico (ignora el iframe de facebook)
+            header_text = header_div.get_text(separator=" ", strip=True)
+            
+            # Regex ajustada al formato exacto: "25.01.2025, 16:25, Quimper challenger, semifinal, indoors"
+            HEADER_RE = re.compile(
+                r"(\d{2}\.\d{2}\.\d{4})\s*,\s*"            # 1. Fecha
+                r"(\d{2}:\d{2}|--:--)\s*,\s*"              # 2. Hora
+                r"(.+?)\s*,\s*"                             # 3. Torneo
+                r"([a-zA-Z0-9\-\s]+?)\s*,\s*"               # 4. Ronda (ej: semifinal, 1st round, QF, Q-1R)
+                r"([a-zA-Z]+)"                              # 5. Superficie (ej: indoors, hard, clay, grass)
+            )
+            
+            match = HEADER_RE.search(header_text)
+            if match:
+                date_str, time_str, tournament, round_name, surface = match.groups()
+                return {
+                    "date_str": date_str,
+                    "time_str": time_str,
+                    "tournament": tournament.strip(),
+                    "round_name": round_name.strip(),
+                    "is_qualifying": "qual" in round_name.lower() or "q-" in round_name.lower(),
+                    "surface": SURFACE_MAP.get(surface.lower().strip(), surface.lower().strip()),
+                }
+    
+    raise ValueError("No se encontró la línea de cabecera en el div esperado.")
+
+# Palabras que NUNCA forman parte del nombre de un jugador.
+_NOISE_WORDS = {
+    "hard", "clay", "grass", "indoors", "indoor", "carpet",
+    "surface", "round", "final", "semifinal", "quarterfinal",
+    "qualification", "challenger", "futures",
+}
+
+
+def _clean_player_name(raw: str) -> Optional[str]:
+    """
+    Limpia un nombre extraído por regex: quita superficies, guiones,
+    puntos sueltos y palabras de ruido que TennisExplorer a veces mezcla.
+    """
+    if not raw:
+        return None
+    # Quitar superficies y palabras de ruido (case-insensitive, como palabras completas)
+    cleaned = raw
+    for word in _NOISE_WORDS:
+        cleaned = re.sub(rf"\b{re.escape(word)}\b", " ", cleaned, flags=re.IGNORECASE)
+    # Quitar puntos, guiones y dígitos sueltos
+    cleaned = re.sub(r"[\d\.\-\_]+", " ", cleaned)
+    # Normalizar espacios
+    cleaned = re.sub(r"\s+", " ", cleaned).strip()
+    # Descartar si quedó vacío o muy corto (ruido)
+    if not cleaned or len(cleaned) < 3:
+        return None
+    return cleaned
+
+
+def parse_full_names(page_text: str) -> tuple[Optional[str], Optional[str]]:
+    """
+    Extrae nombres completos del marcador. La regex es permisiva y luego
+    _clean_player_name elimina el ruido típico (superficies, guiones, etc.).
     """
     match = re.search(
-        r"([A-Za-zÀ-ÿ' .-]+?)\s+\d+\s*:\s*\d+\s*\([^)]*\)\s*([A-Za-zÀ-ÿ' .-]+?)(?=\s{2,}|Singles ranking|$)",
-        page_text
+        r"([A-Za-zÀ-ÿ'\s\.\-]+?)"
+        r"\s+\d+\s*:\s*\d+\s*\([^)]*\)\s*"
+        r"([A-Za-zÀ-ÿ'\s\.\-]+?)"
+        r"(?=\s{2,}|Singles ranking|Birthdate|$)",
+        page_text,
     )
     if not match:
         return None, None
-    return match.group(1).strip(), match.group(2).strip()
+
+    raw_a, raw_b = match.group(1), match.group(2)
+    return _clean_player_name(raw_a), _clean_player_name(raw_b)
+
+def parse_player_photos(html: str) -> tuple[str | None, str | None]:
+    """
+    Extrae las URLs de las fotos de los jugadores desde las imágenes de avatar.
+    TennisExplorer usa: <img src="/res/img/player/XXX.jpeg" alt="Avatar">
+    """
+    soup = BeautifulSoup(html, "html.parser")
+    
+    # Buscar la tabla de resultados del partido
+    result_table = soup.select_one("table.gDetail")
+    if not result_table:
+        return None, None
+    
+    # Las fotos están en las celdas con clase "thumb"
+    thumbs = result_table.select("td.thumb img")
+    
+    photo_a = None
+    photo_b = None
+    
+    if len(thumbs) >= 1:
+        src_a = thumbs[0].get("src")
+        if src_a:
+            photo_a = f"https://www.tennisexplorer.com{src_a}"
+    
+    if len(thumbs) >= 2:
+        src_b = thumbs[1].get("src")
+        if src_b:
+            photo_b = f"https://www.tennisexplorer.com{src_b}"
+    
+    return photo_a, photo_b
 
 
 def parse_closing_odds(page_text: str) -> tuple[float | None, float | None]:
@@ -145,15 +226,22 @@ def parse_player_bio_tables(html: str) -> tuple[dict, dict]:
 
 
 def _clean_or_none(value) -> str | None:
-    value = str(value).strip()
+    """
+    Limpia el valor y devuelve None si está vacío, es un guion o 'nan'.
+    Usa rstrip('.') para manejar casos como '-.' que usa TennisExplorer.
+    """
+    if value is None:
+        return None
+    value = str(value).strip().rstrip(".")
     return None if value in ("-", "", "nan") else value
 
 
 def parse_ranking(raw) -> int | None:
+    """Convierte el ranking a entero, manejando valores nulos o inválidos."""
     value = _clean_or_none(raw)
     if value is None:
         return None
-    return int(value.rstrip("."))
+    return int(value)  # Ya viene limpio de puntos gracias a _clean_or_none
 
 
 def parse_birthdate(raw) -> str | None:
@@ -182,6 +270,17 @@ def parse_kg(raw) -> int | None:
     return int(value.replace("kg", "").strip())
 
 
+def parse_year(raw) -> int | None:
+    """Convierte año a integer, manejando None y strings vacíos."""
+    value = _clean_or_none(raw)
+    if value is None:
+        return None
+    try:
+        return int(value)
+    except (ValueError, TypeError):
+        return None
+
+
 def clean_bio(bio: dict) -> dict:
     return {
         "current_ranking": parse_ranking(bio.get("Singles ranking")),
@@ -189,19 +288,19 @@ def clean_bio(bio: dict) -> dict:
         "height_cm": parse_cm(bio.get("Height")),
         "weight_kg": parse_kg(bio.get("Weight")),
         "plays": _clean_or_none(bio.get("Plays")),
-        "turned_pro": _clean_or_none(bio.get("Turned pro")),
+        "turned_pro": parse_year(bio.get("Turned pro")),  # ← Ahora devuelve int | None
     }
-
 
 def parse_match_detail(match_id: int, html: str) -> MatchDetail:
     soup = BeautifulSoup(html, "html.parser")
     page_text = soup.get_text(separator=" ", strip=True)
 
     detail = MatchDetail(match_id=match_id)
-    detail.__dict__.update(parse_header(page_text))
+    detail.__dict__.update(parse_header(soup))  # ← Ahora pasa soup
     detail.closing_odds_a, detail.closing_odds_b = parse_closing_odds(page_text)
     detail.player_a_bio, detail.player_b_bio = parse_player_bio_tables(html)
     detail.player_a_full_name, detail.player_b_full_name = parse_full_names(page_text)
+    detail.player_a_photo, detail.player_b_photo = parse_player_photos(html)
 
     return detail
 
