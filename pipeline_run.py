@@ -1,5 +1,5 @@
 """
-pipeline_run.py — CLI profesional de CourtSimulator
+pipeline_run.py — Centro de Comando de CourtSimulator
 
 Subcomandos:
     scrape      Ejecuta el scraping de uno o varios días (con checkpoint resumible).
@@ -15,13 +15,13 @@ Uso:
 Requiere la variable de entorno SUPABASE_DB_URL.
 """
 
-import argparse
-import json
-import logging
 import os
-import random
 import sys
 import time
+import random
+import json
+import logging
+import argparse
 from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Optional
@@ -31,23 +31,11 @@ import psycopg2.extras
 import requests
 from dotenv import load_dotenv
 
-# ---------------------------------------------------------------------------
-# Imports de módulos del scraper. Si la estructura de carpetas es distinta,
-# añadir el directorio al sys.path antes de ejecutar el script.
-# ---------------------------------------------------------------------------
-try:
-    import results
-    import match_detail
-except ImportError as e:
-    sys.stderr.write(
-        f"[FATAL] No se pudieron importar los módulos del scraper: {e}\n"
-        "Asegúrate de ejecutar el script desde la raíz del proyecto "
-        "o de que 'results.py' y 'match_detail.py' estén en el PYTHONPATH.\n"
-    )
-    sys.exit(2)
+# --- IMPORTS DEL SCRAPER ---
+from scraper import results, match_detail
+from scraper.rounds import round_sort_key
 
-# El módulo de backfill es opcional: si no existe, el subcomando `backfill`
-# mostrará un mensaje informativo en lugar de romper la CLI.
+# Importamos backfill_players si existe en la carpeta raíz
 try:
     import backfill_players
     HAS_BACKFILL = True
@@ -56,16 +44,30 @@ except ImportError:
     HAS_BACKFILL = False
 
 # ---------------------------------------------------------------------------
-# Configuración global
+# Configuración global y Logging
 # ---------------------------------------------------------------------------
 load_dotenv(override=True)
 
+LOG_DIR = Path("logs")
+LOG_DIR.mkdir(exist_ok=True)
+
+# Configurar logging para consola y archivo de forma limpia (sin duplicados)
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s | %(levelname)-7s | %(message)s",
     datefmt="%Y-%m-%d %H:%M:%S",
+    handlers=[
+        logging.StreamHandler(sys.stdout),
+        logging.FileHandler(LOG_DIR / "pipeline.log", mode="a", encoding="utf-8"),
+    ]
 )
 log = logging.getLogger("court-sim")
+
+# Handler separado para errores críticos
+error_handler = logging.FileHandler(LOG_DIR / "errors.log", mode="a", encoding="utf-8")
+error_handler.setLevel(logging.ERROR)
+error_handler.setFormatter(logging.Formatter("%(asctime)s | %(levelname)-7s | %(message)s"))
+log.addHandler(error_handler)
 
 MIN_DELAY = 2.0
 MAX_DELAY = 3.5
@@ -109,7 +111,6 @@ def fetch_with_backoff(fetch_fn, *args, max_retries: int = 5, **kwargs):
         except requests.HTTPError as exc:
             last_exc = exc
             status = exc.response.status_code if exc.response is not None else None
-            # Reintentamos solo ante códigos típicos de bloqueo / servidor.
             if status in (429, 403, 500, 502, 503, 504):
                 wait = delay * (2 ** (attempt - 1)) + random.uniform(0, 1)
                 log.warning(
@@ -118,10 +119,8 @@ def fetch_with_backoff(fetch_fn, *args, max_retries: int = 5, **kwargs):
                 )
                 time.sleep(wait)
                 continue
-            # Cualquier otro HTTPError (404, 400, ...) se propaga de inmediato.
             raise
         except requests.RequestException as exc:
-            # Errores de red (timeout, DNS, conexión reseteada, ...).
             last_exc = exc
             wait = delay * (2 ** (attempt - 1)) + random.uniform(0, 1)
             log.warning(
@@ -130,9 +129,7 @@ def fetch_with_backoff(fetch_fn, *args, max_retries: int = 5, **kwargs):
             )
             time.sleep(wait)
 
-    raise RuntimeError(
-        f"Agotados los {max_retries} reintentos. Último error: {last_exc}"
-    )
+    raise RuntimeError(f"Agotados los {max_retries} reintentos. Último error: {last_exc}")
 
 
 def polite_sleep() -> None:
@@ -142,19 +139,15 @@ def polite_sleep() -> None:
 def get_connection():
     db_url = os.environ.get("SUPABASE_DB_URL")
     if not db_url:
-        raise RuntimeError(
-            "Falta la variable de entorno SUPABASE_DB_URL. "
-            "Defínela en tu archivo .env o en el entorno."
-        )
+        raise RuntimeError("Falta la variable de entorno SUPABASE_DB_URL.")
     try:
-        conn = psycopg2.connect(db_url)
-        return conn
+        return psycopg2.connect(db_url)
     except psycopg2.Error as e:
         raise RuntimeError(f"No se pudo conectar a Supabase: {e}") from e
 
 
 # ---------------------------------------------------------------------------
-# Operaciones de base de datos (players, tournaments, matches, closing_odds)
+# Operaciones de base de datos
 # ---------------------------------------------------------------------------
 def get_or_create_player(
     cur,
@@ -165,13 +158,11 @@ def get_or_create_player(
     photo_url: Optional[str] = None,
 ) -> int:
     """
-    Busca al jugador por su alias (slug) de TennisExplorer. Si existe,
-    actualiza sus datos (con COALESCE para no sobrescribir con NULL).
-    Si no existe, lo crea junto con su alias.
+    Busca al jugador por su alias. Si existe, actualiza sus datos protegiendo 
+    el nombre canónico. Si no existe, lo crea junto con su alias.
     """
     canonical_name = full_name or name_guess
 
-    # 1. ¿Ya existe este alias?
     cur.execute(
         "SELECT player_id FROM player_aliases WHERE source = %s AND alias_name = %s",
         ("tennisexplorer", slug),
@@ -180,10 +171,11 @@ def get_or_create_player(
 
     if row:
         player_id = row[0]
+        # Usamos CASE para NO sobrescribir un canonical_name válido con uno sucio/nuevo
         cur.execute(
             """
             UPDATE players SET
-                canonical_name  = COALESCE(%s, canonical_name),
+                canonical_name  = CASE WHEN canonical_name IS NULL OR canonical_name = '' THEN %s ELSE canonical_name END,
                 current_ranking = COALESCE(%s, current_ranking),
                 birth_date      = COALESCE(%s, birth_date),
                 height_cm       = COALESCE(%s, height_cm),
@@ -207,7 +199,6 @@ def get_or_create_player(
         )
         return player_id
 
-    # 2. No existe: INSERT en players + INSERT en player_aliases.
     cur.execute(
         """
         INSERT INTO players (
@@ -246,8 +237,7 @@ def get_or_create_tournament(
 ) -> int:
     if year is not None:
         cur.execute(
-            "SELECT id FROM tournaments WHERE name = %s "
-            "AND EXTRACT(YEAR FROM start_date) = %s LIMIT 1",
+            "SELECT id FROM tournaments WHERE name = %s AND EXTRACT(YEAR FROM start_date) = %s LIMIT 1",
             (name, year),
         )
     else:
@@ -262,8 +252,7 @@ def get_or_create_tournament(
 
     approx_start_date = date(year, 1, 1) if year else None
     cur.execute(
-        "INSERT INTO tournaments (name, surface, level, start_date) "
-        "VALUES (%s, %s, %s, %s) RETURNING id",
+        "INSERT INTO tournaments (name, surface, level, start_date) VALUES (%s, %s, %s, %s) RETURNING id",
         (name, surface, level, approx_start_date),
     )
     return cur.fetchone()[0]
@@ -281,35 +270,51 @@ def upsert_match(
     sets: list[dict],
     source_match_id: str,
 ) -> int:
+    safe_round = round_name or "UNKNOWN"
+    round_order = round_sort_key(safe_round)
+
     cur.execute(
         """
         INSERT INTO matches (
-            tournament_id, player_a_id, player_b_id, round, is_qualifying,
-            match_date, status, winner_id, sets, source, source_match_id
+            tournament_id, player_a_id, player_b_id, round, round_order,
+            is_qualifying, match_date, status, winner_id, sets,
+            source, source_match_id
         )
         VALUES (
-            %s, %s, %s, %s, %s, %s, 'finished', %s, %s, 'tennisexplorer', %s
+            %s, %s, %s, %s, %s,
+            %s, %s, 'finished', %s, %s,
+            'tennisexplorer', %s
         )
         ON CONFLICT (source, source_match_id) DO UPDATE SET
+            tournament_id = EXCLUDED.tournament_id,
+            player_a_id   = EXCLUDED.player_a_id,
+            player_b_id   = EXCLUDED.player_b_id,
             round         = EXCLUDED.round,
+            round_order   = EXCLUDED.round_order,
             is_qualifying = EXCLUDED.is_qualifying,
+            match_date    = EXCLUDED.match_date,
             winner_id     = EXCLUDED.winner_id,
             sets          = EXCLUDED.sets
         RETURNING id
         """,
         (
-            tournament_id, player_a_id, player_b_id, round_name, is_qualifying,
-            match_date, winner_id, psycopg2.extras.Json(sets), source_match_id,
+            tournament_id,
+            player_a_id,
+            player_b_id,
+            safe_round,
+            round_order,
+            is_qualifying,
+            match_date,
+            winner_id,
+            psycopg2.extras.Json(sets),
+            str(source_match_id),
         ),
     )
     return cur.fetchone()[0]
 
 
 def upsert_closing_odds(cur, match_id: int, player_id: int, odds: Optional[float]) -> None:
-    if odds is None:
-        return
-    if odds <= 1.0:
-        # Una cuota <= 1.0 no tiene sentido (implied prob > 100%). Saltarla.
+    if odds is None or odds <= 1.0:
         return
     implied_probability = round(100.0 / odds, 2)
     cur.execute(
@@ -329,9 +334,7 @@ def sets_to_jsonb(sets_a: list[dict], sets_b: list[dict]) -> list[dict]:
     return [{"a": a["games"], "b": b["games"]} for a, b in zip(sets_a, sets_b)]
 
 
-def decide_winner(player_a_id: int, player_b_id: int,
-                  sets_a: list[dict], sets_b: list[dict]) -> Optional[int]:
-    """Devuelve el id del ganador, o None si no se puede determinar."""
+def decide_winner(player_a_id: int, player_b_id: int, sets_a: list[dict], sets_b: list[dict]) -> Optional[int]:
     if not sets_a or not sets_b or len(sets_a) != len(sets_b):
         return None
     won_a = sum(1 for a, b in zip(sets_a, sets_b) if a["games"] > b["games"])
@@ -347,18 +350,12 @@ def decide_winner(player_a_id: int, player_b_id: int,
 # Pipeline de un día
 # ---------------------------------------------------------------------------
 def run_pipeline_for_day(target_date: date) -> tuple[int, str, Optional[str]]:
-    """
-    Ejecuta el pipeline completo para una fecha.
-    Devuelve: (filas_procesadas, status, error_message)
-    """
     conn = get_connection()
     conn.autocommit = False
     cur = conn.cursor()
 
-    # Registrar la corrida
     cur.execute(
-        "INSERT INTO scrape_runs (source, data_type, status) "
-        "VALUES (%s, %s, 'running') RETURNING id",
+        "INSERT INTO scrape_runs (source, data_type, status) VALUES (%s, %s, 'running') RETURNING id",
         ("tennisexplorer", "results+detail"),
     )
     run_id = cur.fetchone()[0]
@@ -374,9 +371,7 @@ def run_pipeline_for_day(target_date: date) -> tuple[int, str, Optional[str]]:
 
         for row in match_rows:
             try:
-                html = fetch_with_backoff(
-                    match_detail.fetch_match_detail_html, row.match_id
-                )
+                html = fetch_with_backoff(match_detail.fetch_match_detail_html, row.match_id)
                 detail = match_detail.parse_match_detail(row.match_id, html)
 
                 player_a_id = get_or_create_player(
@@ -395,9 +390,7 @@ def run_pipeline_for_day(target_date: date) -> tuple[int, str, Optional[str]]:
                     detail.surface, row.level_guess,
                 )
 
-                winner_id = decide_winner(
-                    player_a_id, player_b_id, row.sets_a, row.sets_b
-                )
+                winner_id = decide_winner(player_a_id, player_b_id, row.sets_a, row.sets_b)
 
                 match_id = upsert_match(
                     cur, tournament_id, player_a_id, player_b_id,
@@ -412,10 +405,7 @@ def run_pipeline_for_day(target_date: date) -> tuple[int, str, Optional[str]]:
 
                 conn.commit()
                 rows_processed += 1
-                log.info(
-                    "  OK  %s vs %s  [id=%s]",
-                    row.player_a_name, row.player_b_name, row.match_id,
-                )
+                log.info("  OK  %s vs %s  [id=%s]", row.player_a_name, row.player_b_name, row.match_id)
 
             except Exception as exc:
                 conn.rollback()
@@ -428,7 +418,6 @@ def run_pipeline_for_day(target_date: date) -> tuple[int, str, Optional[str]]:
         error_message = str(exc)
         log.error("Error general del pipeline para %s: %s", target_date, exc)
 
-    # Cerrar la corrida
     try:
         cur.execute(
             """
@@ -448,15 +437,12 @@ def run_pipeline_for_day(target_date: date) -> tuple[int, str, Optional[str]]:
         cur.close()
         conn.close()
 
-    log.info(
-        "Pipeline terminado para %s: %d partidos, status=%s",
-        target_date, rows_processed, status,
-    )
+    log.info("Pipeline terminado para %s: %d partidos, status=%s", target_date, rows_processed, status)
     return rows_processed, status, error_message
 
 
 # ---------------------------------------------------------------------------
-# Subcomandos
+# Subcomandos CLI
 # ---------------------------------------------------------------------------
 def cmd_scrape(args: argparse.Namespace) -> int:
     start = args.start
@@ -472,10 +458,7 @@ def cmd_scrape(args: argparse.Namespace) -> int:
     processed_days = 0
     failed_days = 0
 
-    log.info(
-        "Iniciando scraping: %s → %s (%d día%s)",
-        start, end, total_days, "s" if total_days > 1 else "",
-    )
+    log.info("Iniciando scraping: %s → %s (%d día%s)", start, end, total_days, "s" if total_days > 1 else "")
 
     while current <= end:
         day_str = current.isoformat()
@@ -495,19 +478,13 @@ def cmd_scrape(args: argparse.Namespace) -> int:
                 failed_days += 1
         current += timedelta(days=1)
 
-    log.info(
-        "Resumen final: %d día(s) OK, %d día(s) con error.",
-        processed_days, failed_days,
-    )
+    log.info("Resumen final: %d día(s) OK, %d día(s) con error.", processed_days, failed_days)
     return 0 if failed_days == 0 else 1
 
 
 def cmd_backfill(args: argparse.Namespace) -> int:
     if not HAS_BACKFILL:
-        log.error(
-            "El módulo 'backfill_players' no está disponible. "
-            "Crea el archivo 'backfill_players.py' en tu proyecto para usar este comando."
-        )
+        log.error("El módulo 'backfill_players' no está disponible.")
         return 2
 
     log.info("Ejecutando backfill de perfiles (límite=%d)...", args.limit)
@@ -529,8 +506,7 @@ def cmd_status(args: argparse.Namespace) -> int:
     cur = conn.cursor()
     cur.execute(
         """
-        SELECT id, source, data_type, status, rows_scraped,
-               started_at, finished_at, error_message
+        SELECT id, source, data_type, status, rows_scraped, started_at, finished_at, error_message
         FROM scrape_runs
         ORDER BY started_at DESC
         LIMIT %s
@@ -545,19 +521,14 @@ def cmd_status(args: argparse.Namespace) -> int:
         log.info("No hay corridas registradas todavía.")
         return 0
 
-    print(f"{'ID':>5}  {'Fuente':<15} {'Tipo':<16} {'Status':<10} "
-          f"{'Filas':>6}  {'Iniciado':<19} {'Finalizado':<19}  Error")
+    print(f"{'ID':>5}  {'Fuente':<15} {'Tipo':<16} {'Status':<10} {'Filas':>6}  {'Iniciado':<19} {'Finalizado':<19}  Error")
     print("-" * 120)
     for r in rows:
-        (rid, source, dtype, status, scraped,
-         started, finished, err) = r
+        rid, source, dtype, status, scraped, started, finished, err = r
         started_s = started.strftime("%Y-%m-%d %H:%M:%S") if started else ""
         finished_s = finished.strftime("%Y-%m-%d %H:%M:%S") if finished else ""
         err_s = (err[:40] + "…") if err and len(err) > 40 else (err or "")
-        print(
-            f"{rid:>5}  {source:<15} {dtype:<16} {status:<10} "
-            f"{scraped or 0:>6}  {started_s:<19} {finished_s:<19}  {err_s}"
-        )
+        print(f"{rid:>5}  {source:<15} {dtype:<16} {status:<10} {scraped or 0:>6}  {started_s:<19} {finished_s:<19}  {err_s}")
     return 0
 
 
@@ -568,9 +539,7 @@ def _parse_date(s: str) -> date:
     try:
         return datetime.strptime(s, "%Y-%m-%d").date()
     except ValueError:
-        raise argparse.ArgumentTypeError(
-            f"Fecha inválida: '{s}'. Usa el formato YYYY-MM-DD."
-        )
+        raise argparse.ArgumentTypeError(f"Fecha inválida: '{s}'. Usa el formato YYYY-MM-DD.")
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -581,51 +550,26 @@ def build_parser() -> argparse.ArgumentParser:
     )
     sub = parser.add_subparsers(dest="command", required=True)
 
-    # scrape
-    p_scrape = sub.add_parser(
-        "scrape",
-        help="Scrapea uno o varios días (con checkpoint resumible).",
-    )
+    p_scrape = sub.add_parser("scrape", help="Scrapea uno o varios días (con checkpoint resumible).")
     p_scrape.add_argument("start", type=_parse_date, help="Fecha de inicio (YYYY-MM-DD).")
-    p_scrape.add_argument(
-        "end", nargs="?", type=_parse_date, default=None,
-        help="Fecha de fin (YYYY-MM-DD). Si se omite, usa 'start'.",
-    )
+    p_scrape.add_argument("end", nargs="?", type=_parse_date, default=None, help="Fecha de fin (YYYY-MM-DD).")
     p_scrape.set_defaults(func=cmd_scrape)
 
-    # backfill
-    p_back = sub.add_parser(
-        "backfill",
-        help="Enriquece perfiles de jugadores con datos de /player/{slug}/.",
-    )
-    p_back.add_argument(
-        "--limit", type=int, default=100,
-        help="Número máximo de jugadores a procesar (por defecto: 100).",
-    )
+    p_back = sub.add_parser("backfill", help="Enriquece perfiles de jugadores con datos de /player/{slug}/.")
+    p_back.add_argument("--limit", type=int, default=100, help="Número máximo de jugadores a procesar.")
     p_back.set_defaults(func=cmd_backfill)
 
-    # status
-    p_status = sub.add_parser(
-        "status",
-        help="Muestra las últimas corridas registradas.",
-    )
-    p_status.add_argument(
-        "--limit", type=int, default=10,
-        help="Número de corridas a mostrar (por defecto: 10).",
-    )
+    p_status = sub.add_parser("status", help="Muestra las últimas corridas registradas.")
+    p_status.add_argument("--limit", type=int, default=10, help="Número de corridas a mostrar.")
     p_status.set_defaults(func=cmd_status)
 
     return parser
 
 
-# ---------------------------------------------------------------------------
-# Entry point
-# ---------------------------------------------------------------------------
 def main() -> int:
     parser = build_parser()
     args = parser.parse_args()
 
-    # Normalizar: si `scrape` no recibió `end`, usar `start`.
     if args.command == "scrape" and args.end is None:
         args.end = args.start
 

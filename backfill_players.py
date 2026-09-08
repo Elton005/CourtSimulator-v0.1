@@ -1,13 +1,3 @@
-"""
-backfill_players.py
-
-Script para enriquecer la tabla 'players' con datos del perfil de Tennis Explorer.
-Busca jugadores con campos NULL y actualiza su información.
-
-Uso:
-    python backfill_players.py
-"""
-
 import os
 import time
 import random
@@ -15,10 +5,10 @@ import logging
 import psycopg2
 from dotenv import load_dotenv
 
-# Asegúrate de que la ruta sea correcta según tu estructura de carpetas
-import sys
-sys.path.append(os.path.join(os.path.dirname(__file__), 'scraper', 'sources', 'tennisexplorer'))
-import player_profile
+# --- IMPORTS DEL SCRAPER (ACTUALIZADOS) ---
+from scraper import player_profile
+
+from scraper.rounds import round_sort_key
 
 load_dotenv(override=True)
 
@@ -72,11 +62,12 @@ def run_backfill(limit: int = 100):
                 log.warning(f"No se pudieron extraer datos para {slug}")
                 continue
 
-            # Actualizar solo los campos que no sean NULL (usando COALESCE)
+            # Actualizar campos usando COALESCE (incluyendo flag_code ahora)
             cur.execute(
                 """
                 UPDATE players SET
                     country = COALESCE(%s, country),
+                    flag_code = COALESCE(%s, flag_code),
                     height_cm = COALESCE(%s, height_cm),
                     weight_kg = COALESCE(%s, weight_kg),
                     birth_date = COALESCE(%s, birth_date),
@@ -88,6 +79,7 @@ def run_backfill(limit: int = 100):
                 """,
                 (
                     profile_data.get("country"),
+                    profile_data.get("flag_code"),       # <-- CORREGIDO: Ahora se guarda
                     profile_data.get("height_cm"),
                     profile_data.get("weight_kg"),
                     profile_data.get("birth_date"),
@@ -100,13 +92,12 @@ def run_backfill(limit: int = 100):
             )
             conn.commit()
             updated_count += 1
-            log.info(f"  ✓ Actualizado: {slug}")
+            log.info(f"  ✓ Actualizado: {slug} (País: {profile_data.get('country')})")
 
         except Exception as exc:
             conn.rollback()
             log.error(f"  ✗ Error al procesar {slug}: {exc}")
 
-        # Pausa educada para no sobrecargar el servidor
         time.sleep(random.uniform(MIN_DELAY, MAX_DELAY))
 
     cur.close()
@@ -115,5 +106,4 @@ def run_backfill(limit: int = 100):
 
 
 if __name__ == "__main__":
-    # Puedes cambiar el límite a 500 o 1000 si quieres procesar más de una vez
     run_backfill(limit=100)

@@ -24,6 +24,7 @@ from io import StringIO
 import requests
 import pandas as pd
 from bs4 import BeautifulSoup
+from .rounds import normalize_round, round_sort_key
 
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36"

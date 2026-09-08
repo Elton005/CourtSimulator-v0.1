@@ -1,0 +1,294 @@
+name: Historical Backfill (2021-2026)
+
+on:
+  workflow_dispatch:  # Solo se ejecuta manualmente
+
+jobs:
+  # Job para 2021
+  backfill-2021:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360  # 6 horas
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Run backfill 2021
+        env:
+          SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
+        run: |
+          echo "🚀 Iniciando backfill 2021..."
+          python pipeline_run.py scrape 2021-01-01 2021-12-31
+
+      - name: Upload logs
+        if: always()  # Sube logs incluso si falla
+        uses: actions/upload-artifact@v4
+        with:
+          name: logs-2021
+          path: logs/
+          retention-days: 30
+
+  # Job para 2022
+  backfill-2022:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    needs: backfill-2021  # Espera a que termine 2021
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Download checkpoint from 2021
+        uses: actions/download-artifact@v4
+        with:
+          name: checkpoint
+          path: .
+        continue-on-error: true  # No falla si no existe
+
+      - name: Run backfill 2022
+        env:
+          SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
+        run: |
+          echo "🚀 Iniciando backfill 2022..."
+          python pipeline_run.py scrape 2022-01-01 2022-12-31
+
+      - name: Upload logs and checkpoint
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: logs-2022
+          path: |
+            logs/
+            backfill_checkpoint.json
+          retention-days: 30
+
+  # Job para 2023
+  backfill-2023:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    needs: backfill-2022
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Download checkpoint
+        uses: actions/download-artifact@v4
+        with:
+          name: logs-2022
+          path: .
+        continue-on-error: true
+
+      - name: Run backfill 2023
+        env:
+          SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
+        run: |
+          echo "🚀 Iniciando backfill 2023..."
+          python pipeline_run.py scrape 2023-01-01 2023-12-31
+
+      - name: Upload logs and checkpoint
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: logs-2023
+          path: |
+            logs/
+            backfill_checkpoint.json
+          retention-days: 30
+
+  # Job para 2024
+  backfill-2024:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    needs: backfill-2023
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Download checkpoint
+        uses: actions/download-artifact@v4
+        with:
+          name: logs-2023
+          path: .
+        continue-on-error: true
+
+      - name: Run backfill 2024
+        env:
+          SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
+        run: |
+          echo "🚀 Iniciando backfill 2024..."
+          python pipeline_run.py scrape 2024-01-01 2024-12-31
+
+      - name: Upload logs and checkpoint
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: logs-2024
+          path: |
+            logs/
+            backfill_checkpoint.json
+          retention-days: 30
+
+  # Job para 2025
+  backfill-2025:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    needs: backfill-2024
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Download checkpoint
+        uses: actions/download-artifact@v4
+        with:
+          name: logs-2024
+          path: .
+        continue-on-error: true
+
+      - name: Run backfill 2025
+        env:
+          SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
+        run: |
+          echo "🚀 Iniciando backfill 2025..."
+          python pipeline_run.py scrape 2025-01-01 2025-12-31
+
+      - name: Upload logs and checkpoint
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: logs-2025
+          path: |
+            logs/
+            backfill_checkpoint.json
+          retention-days: 30
+
+  # Job para 2026 (hasta hoy)
+  backfill-2026:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    needs: backfill-2025
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Download checkpoint
+        uses: actions/download-artifact@v4
+        with:
+          name: logs-2025
+          path: .
+        continue-on-error: true
+
+      - name: Run backfill 2026
+        env:
+          SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
+        run: |
+          echo "🚀 Iniciando backfill 2026..."
+          python pipeline_run.py scrape 2026-01-01 2026-09-09
+
+      - name: Upload logs and checkpoint
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: logs-2026
+          path: |
+            logs/
+            backfill_checkpoint.json
+          retention-days: 30
+
+  # Job final: Player backfill
+  player-backfill:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    needs: backfill-2026
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Run player profile backfill
+        env:
+          SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
+        run: |
+          echo "🔄 Enriqueciendo perfiles de jugadores..."
+          python pipeline_run.py backfill --limit 5000
+
+      - name: Upload final logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: logs-final
+          path: logs/
+          retention-days: 30
