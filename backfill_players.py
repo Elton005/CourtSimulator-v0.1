@@ -15,8 +15,8 @@ load_dotenv(override=True)
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 log = logging.getLogger(__name__)
 
-MIN_DELAY = 2.0
-MAX_DELAY = 3.5
+MIN_DELAY = 1.0
+MAX_DELAY = 1.5
 
 def get_connection():
     db_url = os.environ.get("SUPABASE_DB_URL")
