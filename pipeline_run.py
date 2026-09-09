@@ -69,8 +69,8 @@ error_handler.setLevel(logging.ERROR)
 error_handler.setFormatter(logging.Formatter("%(asctime)s | %(levelname)-7s | %(message)s"))
 log.addHandler(error_handler)
 
-MIN_DELAY = 2.0
-MAX_DELAY = 3.5
+MIN_DELAY = 1.0
+MAX_DELAY = 1.5
 CHECKPOINT_FILE = Path("backfill_checkpoint.json")
 
 
