@@ -142,32 +142,32 @@ def parse_header(soup: BeautifulSoup) -> dict:
     }
 
 
+# Palabras que NUNCA forman parte del nombre de un jugador.
+_NOISE_WORDS = {
+    "hard", "clay", "grass", "indoors", "indoor", "carpet",
+    "surface", "round", "final", "semifinal", "quarterfinal",
+    "qualification", "challenger", "futures",
+}
+
+
 def _clean_player_name(raw: str) -> Optional[str]:
     """
     Limpia un nombre extraído por regex: quita superficies, guiones,
-    puntos sueltos y palabras de ruido que TennisExplorer a veces mezcla.
+    puntos sueltos y palabras de ruido.
     """
     if not raw:
         return None
-    # Quitar superficies y palabras de ruido (case-insensitive, como palabras completas)
     cleaned = raw
     for word in _NOISE_WORDS:
         cleaned = re.sub(rf"\b{re.escape(word)}\b", " ", cleaned, flags=re.IGNORECASE)
-    # Quitar puntos, guiones y dígitos sueltos
     cleaned = re.sub(r"[\d\.\-\_]+", " ", cleaned)
-    # Normalizar espacios
     cleaned = re.sub(r"\s+", " ", cleaned).strip()
-    # Descartar si quedó vacío o muy corto (ruido)
     if not cleaned or len(cleaned) < 3:
         return None
     return cleaned
 
-
 def parse_full_names(page_text: str) -> tuple[Optional[str], Optional[str]]:
-    """
-    Extrae nombres completos del marcador. La regex es permisiva y luego
-    _clean_player_name elimina el ruido típico (superficies, guiones, etc.).
-    """
+    """Extrae nombres completos del marcador."""
     match = re.search(
         r"([A-Za-zÀ-ÿ'\s\.\-]+?)"
         r"\s+\d+\s*:\s*\d+\s*\([^)]*\)\s*"
