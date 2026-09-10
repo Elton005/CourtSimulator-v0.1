@@ -78,45 +78,68 @@ def fetch_match_detail_html(match_id: int) -> str:
 
 def parse_header(soup: BeautifulSoup) -> dict:
     """
-    Extrae la cabecera del partido usando la estructura real del DOM de TennisExplorer.
-    Busca el div inmediatamente después del <h1 class="bg"> que contiene la info.
+    Extrae la cabecera del partido usando un análisis paso a paso.
+    Es mucho más robusto que una sola regex, ya que maneja comas extra
+    en los nombres de los torneos o variaciones en el formato.
     """
+    # 1. Encontrar el título principal
     h1 = soup.find('h1', class_='bg')
-    if h1:
-        header_div = h1.find_next_sibling('div')
-        if header_div:
-            # Obtenemos el texto limpio de este div específico (ignora el iframe de facebook)
-            header_text = header_div.get_text(separator=" ", strip=True)
-            
-            # Regex ajustada al formato exacto: "25.01.2025, 16:25, Quimper challenger, semifinal, indoors"
-            HEADER_RE = re.compile(
-                r"(\d{2}\.\d{2}\.\d{4})\s*,\s*"            # 1. Fecha
-                r"(\d{2}:\d{2}|--:--)\s*,\s*"              # 2. Hora
-                r"(.+?)\s*,\s*"                             # 3. Torneo
-                r"([a-zA-Z0-9\-\s]+?)\s*,\s*"               # 4. Ronda (ej: semifinal, 1st round, QF, Q-1R)
-                r"([a-zA-Z]+)"                              # 5. Superficie (ej: indoors, hard, clay, grass)
-            )
-            
-            match = HEADER_RE.search(header_text)
-            if match:
-                date_str, time_str, tournament, round_name, surface = match.groups()
-                return {
-                    "date_str": date_str,
-                    "time_str": time_str,
-                    "tournament": tournament.strip(),
-                    "round_name": round_name.strip(),
-                    "is_qualifying": "qual" in round_name.lower() or "q-" in round_name.lower(),
-                    "surface": SURFACE_MAP.get(surface.lower().strip(), surface.lower().strip()),
-                }
+    if not h1:
+        raise ValueError("No se encontró la etiqueta <h1 class='bg'>")
     
-    raise ValueError("No se encontró la línea de cabecera en el div esperado.")
-
-# Palabras que NUNCA forman parte del nombre de un jugador.
-_NOISE_WORDS = {
-    "hard", "clay", "grass", "indoors", "indoor", "carpet",
-    "surface", "round", "final", "semifinal", "quarterfinal",
-    "qualification", "challenger", "futures",
-}
+    # 2. Obtener el div inmediatamente siguiente
+    header_div = h1.find_next_sibling('div')
+    if not header_div:
+        raise ValueError("No se encontró el div hermano del <h1>")
+    
+    # 3. Extraer todo el texto limpio de ese div
+    header_text = header_div.get_text(separator=" ", strip=True)
+    
+    # 4. Paso A: Extraer Fecha y Hora (siempre están al principio)
+    date_time_match = re.search(r"(\d{2}\.\d{2}\.\d{4})\s*,\s*(\d{2}:\d{2}|--:--)", header_text)
+    if not date_time_match:
+        # Si falla, imprimimos exactamente qué texto recibió para depurar
+        raise ValueError(f"No se encontró fecha/hora en el texto: '{header_text}'")
+    
+    date_str = date_time_match.group(1)
+    time_str = date_time_match.group(2)
+    
+    # 5. Paso B: Aislar el resto del texto (después de la hora)
+    rest_of_text = header_text[date_time_match.end():].strip()
+    
+    # 6. Paso C: Extraer la Superficie (buscamos las palabras clave al final)
+    surface = "unknown"
+    surface_match = re.search(r"\b(hard|clay|grass|indoors|indoor|carpet)\b", rest_of_text, re.IGNORECASE)
+    if surface_match:
+        surface = surface_match.group(1).lower()
+        # Removemos la superficie del texto para analizar el resto
+        rest_of_text = rest_of_text[:surface_match.start()].strip()
+        # Limpiar comas finales que quedaron al quitar la superficie
+        rest_of_text = rest_of_text.rstrip(',')
+    
+    # 7. Paso D: Separar Torneo y Ronda
+    # Usamos la ÚLTIMA coma para separarlos, así si el torneo tiene comas 
+    # (ej: "New York, USA"), no se rompe.
+    if ',' in rest_of_text:
+        last_comma_idx = rest_of_text.rfind(',')
+        tournament = rest_of_text[:last_comma_idx].strip()
+        round_name = rest_of_text[last_comma_idx+1:].strip()
+    else:
+        # Si no hay coma, asumimos que todo es el torneo
+        tournament = rest_of_text
+        round_name = "Unknown"
+    
+    # 8. Determinar si es qualifying
+    is_qualifying = "qual" in round_name.lower() or "q-" in round_name.lower() or "q_" in round_name.lower()
+    
+    return {
+        "date_str": date_str,
+        "time_str": time_str,
+        "tournament": tournament,
+        "round_name": round_name,
+        "is_qualifying": is_qualifying,
+        "surface": SURFACE_MAP.get(surface, surface), # Usa el mapa, o deja el valor original si no está
+    }
 
 
 def _clean_player_name(raw: str) -> Optional[str]:
