@@ -176,7 +176,7 @@ def parse_results_page(html: str) -> list[ResultRow]:
             sets_won_b = int(tr.select_one("td.result").get_text(strip=True))
 
             level = guess_level(current_tournament_name)
-            in_scope = level != "utr"  # UTR Pro Tennis Series queda fuera del scope
+            in_scope = level not in ("utr", "futures")
 
             if pending["match_id"] and current_is_men and not current_is_doubles and in_scope:
                 rows.append(ResultRow(
