@@ -25,85 +25,137 @@ def get_connection():
     return psycopg2.connect(db_url)
 
 
-def run_backfill(limit: int = 100):
-    conn = get_connection()
-    cur = conn.cursor()
-
-    # Buscar jugadores de Tennis Explorer que les falte país o foto
-    cur.execute(
-        """
-        SELECT p.id, pa.alias_name
-        FROM players p
-        JOIN player_aliases pa ON p.id = pa.player_id
-        WHERE pa.source = 'tennisexplorer'
-          AND (p.country IS NULL OR p.photo_url IS NULL OR p.current_ranking IS NULL)
-        LIMIT %s
-        """,
-        (limit,)
-    )
-    players_to_update = cur.fetchall()
+def run_backfill_all(batch_size: int = 500, max_iterations: int = 20):
+    """
+    Ejecuta múltiples iteraciones de backfill hasta que no queden jugadores pendientes.
+    Ideal para ejecuciones largas en GitHub Actions.
+    """
+    total_updated = 0
     
-    if not players_to_update:
-        log.info("No hay jugadores pendientes de actualizar. ¡Todo al día!")
+    for iteration in range(1, max_iterations + 1):
+        log.info(f"\n{'='*60}")
+        log.info(f"🔄 ITERACIÓN {iteration}/{max_iterations} - Procesando lote de {batch_size} jugadores")
+        log.info(f"{'='*60}\n")
+        
+        conn = get_connection()
+        cur = conn.cursor()
+        
+        # Contar jugadores pendientes ANTES de procesar
+        cur.execute(
+            """
+            SELECT COUNT(*) FROM players p
+            JOIN player_aliases pa ON p.id = pa.player_id
+            WHERE pa.source = 'tennisexplorer'
+              AND (p.country IS NULL OR p.photo_url IS NULL OR p.current_ranking IS NULL)
+            """
+        )
+        pending_count = cur.fetchone()[0]
+        
+        if pending_count == 0:
+            log.info("✅ ¡No quedan jugadores pendientes! Backfill completado.")
+            cur.close()
+            conn.close()
+            return total_updated, True  # Terminado
+        
+        log.info(f"📊 Jugadores pendientes de actualizar: {pending_count}")
+        
+        # Obtener lote actual
+        cur.execute(
+            """
+            SELECT p.id, pa.alias_name
+            FROM players p
+            JOIN player_aliases pa ON p.id = pa.player_id
+            WHERE pa.source = 'tennisexplorer'
+              AND (p.country IS NULL OR p.photo_url IS NULL OR p.current_ranking IS NULL)
+            LIMIT %s
+            """,
+            (batch_size,)
+        )
+        players_to_update = cur.fetchall()
         cur.close()
         conn.close()
-        return
+        
+        if not players_to_update:
+            log.info("✅ No hay más jugadores para procesar en esta iteración.")
+            return total_updated, True
+        
+        updated_in_batch = 0
+        
+        for player_id, slug in players_to_update:
+            try:
+                log.info(f"Procesando jugador: {slug} (ID: {player_id})")
+                html = player_profile.fetch_player_profile_html(slug)
+                profile_data = player_profile.parse_player_profile(html)
 
-    log.info("Se encontraron %d jugadores para actualizar.", len(players_to_update))
-    updated_count = 0
+                if not profile_data:
+                    log.warning(f"No se pudieron extraer datos para {slug}")
+                    continue
 
-    for player_id, slug in players_to_update:
-        try:
-            log.info(f"Procesando jugador: {slug} (ID: {player_id})")
-            html = player_profile.fetch_player_profile_html(slug)
-            profile_data = player_profile.parse_player_profile(html)
-
-            if not profile_data:
-                log.warning(f"No se pudieron extraer datos para {slug}")
-                continue
-
-            # Actualizar campos usando COALESCE (incluyendo flag_code ahora)
-            cur.execute(
-                """
-                UPDATE players SET
-                    country = COALESCE(%s, country),
-                    flag_code = COALESCE(%s, flag_code),
-                    height_cm = COALESCE(%s, height_cm),
-                    weight_kg = COALESCE(%s, weight_kg),
-                    birth_date = COALESCE(%s, birth_date),
-                    current_ranking = COALESCE(%s, current_ranking),
-                    career_high_ranking = COALESCE(%s, career_high_ranking),
-                    plays = COALESCE(%s, plays),
-                    photo_url = COALESCE(%s, photo_url)
-                WHERE id = %s
-                """,
-                (
-                    profile_data.get("country"),
-                    profile_data.get("flag_code"),       # <-- CORREGIDO: Ahora se guarda
-                    profile_data.get("height_cm"),
-                    profile_data.get("weight_kg"),
-                    profile_data.get("birth_date"),
-                    profile_data.get("current_ranking"),
-                    profile_data.get("career_high_ranking"),
-                    profile_data.get("plays"),
-                    profile_data.get("photo_url"),
-                    player_id,
+                conn = get_connection()
+                cur = conn.cursor()
+                
+                cur.execute(
+                    """
+                    UPDATE players SET
+                        country = COALESCE(%s, country),
+                        flag_code = COALESCE(%s, flag_code),
+                        height_cm = COALESCE(%s, height_cm),
+                        weight_kg = COALESCE(%s, weight_kg),
+                        birth_date = COALESCE(%s, birth_date),
+                        current_ranking = COALESCE(%s, current_ranking),
+                        career_high_ranking = COALESCE(%s, career_high_ranking),
+                        plays = COALESCE(%s, plays),
+                        photo_url = COALESCE(%s, photo_url)
+                    WHERE id = %s
+                    """,
+                    (
+                        profile_data.get("country"),
+                        profile_data.get("flag_code"),
+                        profile_data.get("height_cm"),
+                        profile_data.get("weight_kg"),
+                        profile_data.get("birth_date"),
+                        profile_data.get("current_ranking"),
+                        profile_data.get("career_high_ranking"),
+                        profile_data.get("plays"),
+                        profile_data.get("photo_url"),
+                        player_id,
+                    )
                 )
-            )
-            conn.commit()
-            updated_count += 1
-            log.info(f"  ✓ Actualizado: {slug} (País: {profile_data.get('country')})")
+                conn.commit()
+                cur.close()
+                conn.close()
+                
+                updated_in_batch += 1
+                total_updated += 1
+                log.info(f"  ✓ Actualizado: {slug} (País: {profile_data.get('country')})")
 
-        except Exception as exc:
-            conn.rollback()
-            log.error(f"  ✗ Error al procesar {slug}: {exc}")
+            except Exception as exc:
+                log.error(f"  ✗ Error al procesar {slug}: {exc}")
 
-        time.sleep(random.uniform(MIN_DELAY, MAX_DELAY))
-
-    cur.close()
-    conn.close()
-    log.info(f"Backfill completado. {updated_count} jugadores actualizados exitosamente.")
+            time.sleep(random.uniform(MIN_DELAY, MAX_DELAY))
+        
+        log.info(f"\n📊 Lote {iteration} completado: {updated_in_batch}/{len(players_to_update)} jugadores actualizados")
+        log.info(f"📈 Total acumulado: {total_updated} jugadores\n")
+    
+    return total_updated, False  # No terminado (llegó al máximo de iteraciones)
 
 
 if __name__ == "__main__":
-    run_backfill(limit=100)
+    import argparse
+    
+    parser = argparse.ArgumentParser(description="Backfill de perfiles de jugadores")
+    parser.add_argument("--limit", type=int, default=100, help="Número máximo de jugadores (modo simple)")
+    parser.add_argument("--all", action="store_true", help="Procesar TODOS los jugadores en lotes")
+    parser.add_argument("--batch-size", type=int, default=500, help="Tamaño de cada lote (con --all)")
+    
+    args = parser.parse_args()
+    
+    if args.all:
+        total, completed = run_backfill_all(batch_size=args.batch_size)
+        log.info(f"\n🏁 Backfill masivo finalizado. Total actualizado: {total}")
+        if completed:
+            log.info("✅ Todos los jugadores están actualizados.")
+        else:
+            log.info("⚠️ Se alcanzó el máximo de iteraciones. Ejecuta de nuevo para continuar.")
+    else:
+        run_backfill(limit=args.limit)
