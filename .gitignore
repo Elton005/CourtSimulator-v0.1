@@ -1,39 +1,10 @@
-# ============================================
-# CourtSimulator - Archivos que Git debe ignorar
-# ============================================
-
-# 🔒 SECRETOS (¡NUNCA subir contraseñas!)
-.env
-.env.local
-.env.*
-
-# 🐍 Python
+# Archivos compilados de Python
 __pycache__/
-*.py[cod]
-*$py.class
-*.so
-*.egg-info/
-dist/
-build/
+*.pyc
+*.pyo
 
-# 🗂️ Entornos virtuales
-venv/
-env/
-.venv/
-
-# 📝 Archivos de estado local (la nube usa la BD, no estos)
+# Estado local del backfill (no sube a la nube)
 backfill_checkpoint.json
-*.log
 
-# 🖥️ Configuración de editores/IDEs
-.vscode/
-.idea/
-*.swp
-*.swo
-*~
-
-# 🍎 macOS
-.DS_Store
-
-# 🪟 Windows
-Thumbs.db
+# Variables de entorno
+.env

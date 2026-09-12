@@ -1,0 +1,159 @@
+name: 🔄 Backfill Jugadores (Perfiles)
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: 'Modo de ejecución'
+        required: true
+        default: 'all'
+        type: choice
+        options:
+          - all          # Procesa TODOS los jugadores en lotes
+          - single       # Un solo lote
+      batch_size:
+        description: 'Tamaño de cada lote (solo modo "all")'
+        required: false
+        default: '500'
+      limit:
+        description: 'Límite de jugadores (solo modo "single")'
+        required: false
+        default: '1000'
+
+jobs:
+  backfill-players:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360  # 6 horas (máximo de GitHub)
+    
+    steps:
+      - name: 📥 Checkout code
+        uses: actions/checkout@v4
+
+      - name: 🐍 Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: 📦 Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: 📊 Información inicial
+        env:
+          SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
+        run: |
+          echo "🎯 Modo seleccionado: ${{ github.event.inputs.mode }}"
+          echo "📦 Tamaño de lote: ${{ github.event.inputs.batch_size }}"
+          echo "🔢 Límite: ${{ github.event.inputs.limit }}"
+          echo ""
+          echo "📋 Jugadores en la base de datos:"
+          python -c "
+          import os, psycopg2
+          conn = psycopg2.connect(os.environ['SUPABASE_DB_URL'])
+          cur = conn.cursor()
+          cur.execute('SELECT COUNT(*) FROM players')
+          total = cur.fetchone()[0]
+          cur.execute('''
+              SELECT COUNT(*) FROM players p
+              JOIN player_aliases pa ON p.id = pa.player_id
+              WHERE pa.source = 'tennisexplorer'
+                AND (p.country IS NULL OR p.photo_url IS NULL OR p.current_ranking IS NULL)
+          ''')
+          pending = cur.fetchone()[0]
+          cur.close()
+          conn.close()
+          print(f'  Total de jugadores: {total}')
+          print(f'  Pendientes de actualizar: {pending}')
+          "
+
+      - name: 🔄 Ejecutar backfill masivo
+        if: github.event.inputs.mode == 'all'
+        env:
+          SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
+        run: |
+          echo "🚀 Iniciando backfill masivo de perfiles..."
+          echo "⚡ Procesando en lotes de ${{ github.event.inputs.batch_size }} jugadores"
+          echo ""
+          python pipeline_run.py backfill --all --batch-size ${{ github.event.inputs.batch_size }}
+
+      - name: 🔄 Ejecutar backfill simple
+        if: github.event.inputs.mode == 'single'
+        env:
+          SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
+        run: |
+          echo "🚀 Iniciando backfill simple con límite de ${{ github.event.inputs.limit }}..."
+          python pipeline_run.py backfill --limit ${{ github.event.inputs.limit }}
+
+      - name: 📊 Resumen final
+        if: always()
+        env:
+          SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
+        run: |
+          echo ""
+          echo "=========================================="
+          echo "📊 RESUMEN FINAL"
+          echo "=========================================="
+          python -c "
+          import os, psycopg2
+          conn = psycopg2.connect(os.environ['SUPABASE_DB_URL'])
+          cur = conn.cursor()
+          
+          cur.execute('SELECT COUNT(*) FROM players')
+          total = cur.fetchone()[0]
+          
+          cur.execute('SELECT COUNT(*) FROM players WHERE country IS NOT NULL')
+          with_country = cur.fetchone()[0]
+          
+          cur.execute('SELECT COUNT(*) FROM players WHERE photo_url IS NOT NULL')
+          with_photo = cur.fetchone()[0]
+          
+          cur.execute('SELECT COUNT(*) FROM players WHERE current_ranking IS NOT NULL')
+          with_ranking = cur.fetchone()[0]
+          
+          cur.execute('''
+              SELECT COUNT(*) FROM players p
+              JOIN player_aliases pa ON p.id = pa.player_id
+              WHERE pa.source = 'tennisexplorer'
+                AND (p.country IS NULL OR p.photo_url IS NULL OR p.current_ranking IS NULL)
+          ''')
+          pending = cur.fetchone()[0]
+          
+          cur.close()
+          conn.close()
+          
+          print(f'  Total de jugadores: {total}')
+          print(f'  Con país: {with_country} ({with_country*100//total}%)')
+          print(f'  Con foto: {with_photo} ({with_photo*100//total}%)')
+          print(f'  Con ranking: {with_ranking} ({with_ranking*100//total}%)')
+          print(f'  Pendientes: {pending}')
+          "
+          echo "=========================================="
+
+  # Job opcional: Backfill programado semanal
+  scheduled-backfill:
+    runs-on: ubuntu-latest
+    if: github.event_name == 'schedule'
+    timeout-minutes: 120
+    
+    steps:
+      - name: 📥 Checkout code
+        uses: actions/checkout@v4
+
+      - name: 🐍 Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: 📦 Install dependencies
+        run: |
+          pip install -r requirements.txt
+
+      - name: 🔄 Backfill semanal automático
+        env:
+          SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
+        run: |
+          echo "🔄 Ejecutando backfill semanal de 500 jugadores..."
+          python pipeline_run.py backfill --limit 500
