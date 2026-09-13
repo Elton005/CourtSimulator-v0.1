@@ -2,19 +2,7 @@
 scraper/sources/tennisexplorer/match_detail.py
 
 Extrae de una página match-detail: ronda, superficie, cuotas de cierre
-(Home/Away) y datos de perfil de ambos jugadores.
-
-Estrategia: trabaja sobre el TEXTO PLANO de la página (vía
-BeautifulSoup(html).get_text()) para la cabecera y las cuotas, y con
-pandas.read_html() para las tablas de bio/H2H -- ambos métodos son
-más robustos que depender de clases CSS específicas, que todavía no
-hemos confirmado con el HTML crudo real.
-
-Falta confirmar (marcado con TODO):
-- La etiqueta exacta que usa TennisExplorer para rondas de clasificación
-  (qualy). Necesitamos ver un ejemplo real de un partido de qualy.
-- Si "Average odds" bajo Home/Away es siempre la PRIMERA ocurrencia de
-  ese texto en la página (asumido aquí, a confirmar con más ejemplos).
+(Home/Away), datos de perfil de ambos jugadores y el ID canónico del torneo (slug).
 """
 
 import re
@@ -25,19 +13,16 @@ from typing import Optional
 import requests
 import pandas as pd
 from bs4 import BeautifulSoup
-from .rounds import normalize_round, round_sort_key
+# Reemplaza la línea "from .rounds import ..." por esto:
+try:
+    from .rounds import normalize_round, round_sort_key
+except ImportError:
+    # Fallback por si se ejecuta el script directamente o se pierde el contexto del paquete
+    from scraper.rounds import normalize_round, round_sort_key
 
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36"
 }
-
-HEADER_RE = re.compile(
-    r"(\d{2}\.\d{2}\.\d{4})\s*,\s*"          # Fecha
-    r"(\d{2}:\d{2}|--:--)\s*,\s*"            # Hora
-    r"(.+?)\s*,\s*"                           # Torneo (no-greedy, pero...)
-    r"([\w. -]*?(?:round|Final|Semifinal|Quarterfinal|Qualification|Q\d))\s*,\s*" # Ronda
-    r"([\w/]+)"                               # Superficie
-)
 
 SURFACE_MAP = {
     "hard": "hard",
@@ -45,9 +30,16 @@ SURFACE_MAP = {
     "grass": "grass",
     "indoors": "indoor",
     "indoor": "indoor",
+    "carpet": "carpet",
 }
 
 BIO_FIELDS = ["Singles ranking", "Birthdate", "Height", "Weight", "Plays", "Turned pro"]
+
+_NOISE_WORDS = {
+    "hard", "clay", "grass", "indoors", "indoor", "carpet",
+    "surface", "round", "final", "semifinal", "quarterfinal",
+    "qualification", "challenger", "futures",
+}
 
 
 @dataclass
@@ -56,6 +48,8 @@ class MatchDetail:
     date_str: str | None = None
     time_str: str | None = None
     tournament: str | None = None
+    tournament_slug: str | None = None      # ← NUEVO: ID canónico del torneo
+    tournament_year: int | None = None      # ← NUEVO: Año extraído de la URL
     round_name: str | None = None
     is_qualifying: bool = False
     surface: str | None = None
@@ -65,8 +59,8 @@ class MatchDetail:
     player_b_bio: dict = field(default_factory=dict)
     player_a_full_name: str | None = None
     player_b_full_name: str | None = None
-    player_a_photo: str | None = None  # ← NUEVO
-    player_b_photo: str | None = None  # ← NUEVO
+    player_a_photo: str | None = None
+    player_b_photo: str | None = None
 
 
 def fetch_match_detail_html(match_id: int) -> str:
@@ -78,83 +72,75 @@ def fetch_match_detail_html(match_id: int) -> str:
 
 def parse_header(soup: BeautifulSoup) -> dict:
     """
-    Extrae la cabecera del partido usando un análisis paso a paso.
-    Es mucho más robusto que una sola regex, ya que maneja comas extra
-    en los nombres de los torneos o variaciones en el formato.
+    Extrae la cabecera del partido. 
+    NUEVO: Extrae el slug y el año directamente del href del enlace del torneo.
     """
-    # 1. Encontrar el título principal
     h1 = soup.find('h1', class_='bg')
     if not h1:
         raise ValueError("No se encontró la etiqueta <h1 class='bg'>")
     
-    # 2. Obtener el div inmediatamente siguiente
     header_div = h1.find_next_sibling('div')
     if not header_div:
         raise ValueError("No se encontró el div hermano del <h1>")
     
-    # 3. Extraer todo el texto limpio de ese div
     header_text = header_div.get_text(separator=" ", strip=True)
     
-    # 4. Paso A: Extraer Fecha y Hora (siempre están al principio)
+    # 1. Extraer Fecha y Hora
     date_time_match = re.search(r"(\d{2}\.\d{2}\.\d{4})\s*,\s*(\d{2}:\d{2}|--:--)", header_text)
     if not date_time_match:
-        # Si falla, imprimimos exactamente qué texto recibió para depurar
         raise ValueError(f"No se encontró fecha/hora en el texto: '{header_text}'")
     
     date_str = date_time_match.group(1)
     time_str = date_time_match.group(2)
-    
-    # 5. Paso B: Aislar el resto del texto (después de la hora)
     rest_of_text = header_text[date_time_match.end():].strip()
     
-    # 6. Paso C: Extraer la Superficie (buscamos las palabras clave al final)
+    # 2. NUEVO: Extraer el enlace del torneo para obtener el slug y el año
+    tournament_link = header_div.find('a')
+    tournament_slug = None
+    tournament_year = None
+    raw_tournament = "Unknown Tournament"
+    
+    if tournament_link:
+        raw_tournament = tournament_link.get_text(strip=True)
+        href = tournament_link.get('href', '')
+        # Ejemplo de href: "/us-open/2021/atp-men/"
+        parts = href.strip("/").split("/")
+        if len(parts) >= 2:
+            tournament_slug = parts[0]
+            try:
+                tournament_year = int(parts[1])
+            except ValueError:
+                pass
+    
+    # 3. Extraer Superficie
     surface = "unknown"
     surface_match = re.search(r"\b(hard|clay|grass|indoors|indoor|carpet)\b", rest_of_text, re.IGNORECASE)
     if surface_match:
         surface = surface_match.group(1).lower()
-        # Removemos la superficie del texto para analizar el resto
-        rest_of_text = rest_of_text[:surface_match.start()].strip()
-        # Limpiar comas finales que quedaron al quitar la superficie
-        rest_of_text = rest_of_text.rstrip(',')
+        rest_of_text = rest_of_text[:surface_match.start()].strip().rstrip(',')
     
-    # 7. Paso D: Separar Torneo y Ronda
-    # Usamos la ÚLTIMA coma para separarlos, así si el torneo tiene comas 
-    # (ej: "New York, USA"), no se rompe.
+    # 4. Separar Torneo y Ronda (fallback por si el link no era suficiente)
     if ',' in rest_of_text:
         last_comma_idx = rest_of_text.rfind(',')
-        tournament = rest_of_text[:last_comma_idx].strip()
         round_name = rest_of_text[last_comma_idx+1:].strip()
     else:
-        # Si no hay coma, asumimos que todo es el torneo
-        tournament = rest_of_text
         round_name = "Unknown"
     
-    # 8. Determinar si es qualifying
-    is_qualifying = "qual" in round_name.lower() or "q-" in round_name.lower() or "q_" in round_name.lower()
+    is_qualifying = bool(re.search(r"qual|q[\-\._]", round_name, re.IGNORECASE))
     
     return {
         "date_str": date_str,
         "time_str": time_str,
-        "tournament": tournament,
+        "tournament": raw_tournament, # Usamos el nombre limpio del link
+        "tournament_slug": tournament_slug,
+        "tournament_year": tournament_year,
         "round_name": round_name,
         "is_qualifying": is_qualifying,
-        "surface": SURFACE_MAP.get(surface, surface), # Usa el mapa, o deja el valor original si no está
+        "surface": SURFACE_MAP.get(surface, surface),
     }
 
 
-# Palabras que NUNCA forman parte del nombre de un jugador.
-_NOISE_WORDS = {
-    "hard", "clay", "grass", "indoors", "indoor", "carpet",
-    "surface", "round", "final", "semifinal", "quarterfinal",
-    "qualification", "challenger", "futures",
-}
-
-
 def _clean_player_name(raw: str) -> Optional[str]:
-    """
-    Limpia un nombre extraído por regex: quita superficies, guiones,
-    puntos sueltos y palabras de ruido.
-    """
     if not raw:
         return None
     cleaned = raw
@@ -166,8 +152,8 @@ def _clean_player_name(raw: str) -> Optional[str]:
         return None
     return cleaned
 
+
 def parse_full_names(page_text: str) -> tuple[Optional[str], Optional[str]]:
-    """Extrae nombres completos del marcador."""
     match = re.search(
         r"([A-Za-zÀ-ÿ'\s\.\-]+?)"
         r"\s+\d+\s*:\s*\d+\s*\([^)]*\)\s*"
@@ -177,46 +163,27 @@ def parse_full_names(page_text: str) -> tuple[Optional[str], Optional[str]]:
     )
     if not match:
         return None, None
+    return _clean_player_name(match.group(1)), _clean_player_name(match.group(2))
 
-    raw_a, raw_b = match.group(1), match.group(2)
-    return _clean_player_name(raw_a), _clean_player_name(raw_b)
 
 def parse_player_photos(html: str) -> tuple[str | None, str | None]:
-    """
-    Extrae las URLs de las fotos de los jugadores desde las imágenes de avatar.
-    TennisExplorer usa: <img src="/res/img/player/XXX.jpeg" alt="Avatar">
-    """
     soup = BeautifulSoup(html, "html.parser")
-    
-    # Buscar la tabla de resultados del partido
     result_table = soup.select_one("table.gDetail")
     if not result_table:
         return None, None
     
-    # Las fotos están en las celdas con clase "thumb"
     thumbs = result_table.select("td.thumb img")
+    photo_a = photo_b = None
     
-    photo_a = None
-    photo_b = None
-    
-    if len(thumbs) >= 1:
-        src_a = thumbs[0].get("src")
-        if src_a:
-            photo_a = f"https://www.tennisexplorer.com{src_a}"
-    
-    if len(thumbs) >= 2:
-        src_b = thumbs[1].get("src")
-        if src_b:
-            photo_b = f"https://www.tennisexplorer.com{src_b}"
+    if len(thumbs) >= 1 and thumbs[0].get("src"):
+        photo_a = f"https://www.tennisexplorer.com{thumbs[0]['src']}"
+    if len(thumbs) >= 2 and thumbs[1].get("src"):
+        photo_b = f"https://www.tennisexplorer.com{thumbs[1]['src']}"
     
     return photo_a, photo_b
 
 
 def parse_closing_odds(page_text: str) -> tuple[float | None, float | None]:
-    """
-    Busca la primera línea 'Average odds X Y', que en el orden habitual
-    de la página corresponde al mercado Home/Away (cuota de cierre).
-    """
     match = re.search(r"Average odds\s+([\d.]+)\s+([\d.]+)", page_text)
     if not match:
         return None, None
@@ -224,19 +191,9 @@ def parse_closing_odds(page_text: str) -> tuple[float | None, float | None]:
 
 
 def parse_player_bio_tables(html: str) -> tuple[dict, dict]:
-    """
-    Usa pandas.read_html para encontrar la tabla de bio (ranking,
-    nacimiento, altura, peso, mano dominante, año pro) sin depender
-    de clases CSS -- solo necesita que exista un <table> real.
-    """
     tables = pd.read_html(StringIO(html))
-    bio_table = None
-    for t in tables:
-        text_blob = t.to_string()
-        if any(field in text_blob for field in BIO_FIELDS):
-            bio_table = t
-            break
-
+    bio_table = next((t for t in tables if any(field in t.to_string() for field in BIO_FIELDS)), None)
+    
     if bio_table is None:
         return {}, {}
 
@@ -251,10 +208,6 @@ def parse_player_bio_tables(html: str) -> tuple[dict, dict]:
 
 
 def _clean_or_none(value) -> str | None:
-    """
-    Limpia el valor y devuelve None si está vacío, es un guion o 'nan'.
-    Usa rstrip('.') para manejar casos como '-.' que usa TennisExplorer.
-    """
     if value is None:
         return None
     value = str(value).strip().rstrip(".")
@@ -262,43 +215,33 @@ def _clean_or_none(value) -> str | None:
 
 
 def parse_ranking(raw) -> int | None:
-    """Convierte el ranking a entero, manejando valores nulos o inválidos."""
     value = _clean_or_none(raw)
-    if value is None:
-        return None
-    return int(value)  # Ya viene limpio de puntos gracias a _clean_or_none
+    return int(value) if value else None
 
 
 def parse_birthdate(raw) -> str | None:
-    """
-    TennisExplorer usa el formato 'D. M. AAAA', ej. '21. 5. 1996'.
-    Devuelve 'AAAA-MM-DD' (ISO), listo para la columna birth_date.
-    """
     value = _clean_or_none(raw)
-    if value is None:
+    if not value:
         return None
-    day, month, year = [p.strip().rstrip(".") for p in value.split(".") if p.strip()]
-    return f"{int(year):04d}-{int(month):02d}-{int(day):02d}"
+    parts = [p.strip().rstrip(".") for p in value.split(".") if p.strip()]
+    if len(parts) == 3:
+        return f"{int(parts[2]):04d}-{int(parts[1]):02d}-{int(parts[0]):02d}"
+    return None
 
 
 def parse_cm(raw) -> int | None:
     value = _clean_or_none(raw)
-    if value is None:
-        return None
-    return int(value.replace("cm", "").strip())
+    return int(value.replace("cm", "").strip()) if value else None
 
 
 def parse_kg(raw) -> int | None:
     value = _clean_or_none(raw)
-    if value is None:
-        return None
-    return int(value.replace("kg", "").strip())
+    return int(value.replace("kg", "").strip()) if value else None
 
 
 def parse_year(raw) -> int | None:
-    """Convierte año a integer, manejando None y strings vacíos."""
     value = _clean_or_none(raw)
-    if value is None:
+    if not value:
         return None
     try:
         return int(value)
@@ -313,15 +256,17 @@ def clean_bio(bio: dict) -> dict:
         "height_cm": parse_cm(bio.get("Height")),
         "weight_kg": parse_kg(bio.get("Weight")),
         "plays": _clean_or_none(bio.get("Plays")),
-        "turned_pro": parse_year(bio.get("Turned pro")),  # ← Ahora devuelve int | None
+        "turned_pro": parse_year(bio.get("Turned pro")),
     }
+
 
 def parse_match_detail(match_id: int, html: str) -> MatchDetail:
     soup = BeautifulSoup(html, "html.parser")
     page_text = soup.get_text(separator=" ", strip=True)
 
     detail = MatchDetail(match_id=match_id)
-    detail.__dict__.update(parse_header(soup))  # ← Ahora pasa soup
+    # Esto actualiza automáticamente tournament_slug y tournament_year
+    detail.__dict__.update(parse_header(soup))
     detail.closing_odds_a, detail.closing_odds_b = parse_closing_odds(page_text)
     detail.player_a_bio, detail.player_b_bio = parse_player_bio_tables(html)
     detail.player_a_full_name, detail.player_b_full_name = parse_full_names(page_text)
@@ -331,8 +276,10 @@ def parse_match_detail(match_id: int, html: str) -> MatchDetail:
 
 
 if __name__ == "__main__":
-    for test_id in (3307389, 3303261):  # partido normal + partido de qualy
+    for test_id in (1974721, 1916239):  
         html = fetch_match_detail_html(test_id)
         result = parse_match_detail(test_id, html)
-        print(result)
+        print(f"Match {test_id}:")
+        print(f"  Tournament: {result.tournament}")
+        print(f"  Slug: {result.tournament_slug} | Year: {result.tournament_year}")
         print()
