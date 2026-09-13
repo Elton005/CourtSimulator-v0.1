@@ -139,6 +139,18 @@ def run_backfill_all(batch_size: int = 500, max_iterations: int = 20):
     
     return total_updated, False  # No terminado (llegó al máximo de iteraciones)
 
+def run_backfill(limit: int = 100):
+    """
+    Ejecuta un backfill simple para un número limitado de jugadores.
+    """
+    log.info(f"🚀 Iniciando backfill simple para {limit} jugadores...")
+    total, completed = run_backfill_all(batch_size=limit, max_iterations=1)
+    log.info(f"✅ Backfill simple finalizado. Total actualizado: {total}")
+
+
+if __name__ == "__main__":
+    import argparse
+    # ... (el resto de tu código argparse se queda igual) ...
 
 if __name__ == "__main__":
     import argparse

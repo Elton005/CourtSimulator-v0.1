@@ -264,3 +264,4 @@ LINE 1: ... surface, level, start_date) VALUES ('Davis Cup', 'unknown',...
 2026-09-12 11:14:08,946 | ERROR   |   ERR partido 2962077: No se encontró fecha/hora en el texto: '20.07.2025 , World University Games , 3. round, -'
 2026-09-12 11:14:09,213 | ERROR   |   ERR partido 2962079: No se encontró fecha/hora en el texto: '20.07.2025 , World University Games , 3. round, -'
 2026-09-12 11:14:21,574 | ERROR   |   ERR partido 2962083: No se encontró fecha/hora en el texto: '20.07.2025 , World University Games , 3. round, -'
+2026-09-13 13:28:36,618 | ERROR   | El backfill falló: tuple index out of range

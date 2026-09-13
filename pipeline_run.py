@@ -5,14 +5,6 @@ Subcomandos:
     scrape      Ejecuta el scraping de uno o varios días (con checkpoint resumible).
     backfill    Enriquece perfiles de jugadores con datos de /player/{slug}/.
     status      Muestra el estado de las últimas corridas registradas.
-
-Uso:
-    python pipeline_run.py scrape 2026-08-31
-    python pipeline_run.py scrape 2026-08-01 2026-08-31
-    python pipeline_run.py backfill --limit 200
-    python pipeline_run.py status
-
-Requiere la variable de entorno SUPABASE_DB_URL.
 """
 
 import os
@@ -22,6 +14,8 @@ import random
 import json
 import logging
 import argparse
+import unicodedata
+import re
 from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Optional
@@ -52,7 +46,6 @@ load_dotenv(override=True)
 LOG_DIR = Path("logs")
 LOG_DIR.mkdir(exist_ok=True)
 
-# Configurar logging para consola y archivo (vital para GitHub Actions)
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s | %(levelname)-7s | %(message)s",
@@ -64,7 +57,6 @@ logging.basicConfig(
 )
 log = logging.getLogger("court-sim")
 
-# Handler separado para errores críticos
 error_handler = logging.FileHandler(LOG_DIR / "errors.log", mode="a", encoding="utf-8")
 error_handler.setLevel(logging.ERROR)
 error_handler.setFormatter(logging.Formatter("%(asctime)s | %(levelname)-7s | %(message)s"))
@@ -73,12 +65,27 @@ log.addHandler(error_handler)
 MIN_DELAY = 1.0
 MAX_DELAY = 1.5
 CHECKPOINT_FILE = Path("backfill_checkpoint.json")
-MAX_WORKERS = 4  # 4 hilos es el punto dulce: rápido y no bloquea TennisExplorer
+MAX_WORKERS = 4  # 4 hilos simultáneos (rápido y seguro)
 
 
 # ---------------------------------------------------------------------------
-# Utilidades: checkpoint, HTTP backoff, conexión a Supabase
+# Utilidades
 # ---------------------------------------------------------------------------
+def slugify_tournament(name: str) -> str:
+    """Convierte un nombre de torneo en un slug limpio (ej: 'Quimper 2 challenger' -> 'quimper-2-challenger')"""
+    if not name:
+        return "unknown"
+    s = unicodedata.normalize('NFKD', name)
+    s = s.encode('ascii', 'ignore').decode('ascii')
+    s = s.lower()
+    s = s.replace('-', ' ')
+    s = re.sub(r'[^a-z0-9\s]', ' ', s)
+    s = re.sub(r'\s+', ' ', s).strip()
+    s = s.replace(' ', '-')
+    s = re.sub(r'-+', '-', s)
+    return s.strip('-')
+
+
 def load_checkpoint() -> set[str]:
     if not CHECKPOINT_FILE.exists():
         return set()
@@ -86,11 +93,9 @@ def load_checkpoint() -> set[str]:
         with CHECKPOINT_FILE.open("r", encoding="utf-8") as f:
             data = json.load(f)
         if not isinstance(data, list):
-            log.warning("Checkpoint corrupto, se reiniciará.")
             return set()
         return set(data)
-    except (json.JSONDecodeError, OSError) as e:
-        log.warning("No se pudo leer el checkpoint (%s), se reiniciará.", e)
+    except (json.JSONDecodeError, OSError):
         return set()
 
 
@@ -103,10 +108,8 @@ def save_checkpoint(done_days: set[str]) -> None:
 
 
 def fetch_with_backoff(fetch_fn, *args, max_retries: int = 5, **kwargs):
-    """Reintenta con backoff exponencial ante 429/403/5xx y errores de red."""
     delay = MIN_DELAY
     last_exc: Optional[Exception] = None
-
     for attempt in range(1, max_retries + 1):
         try:
             return fetch_fn(*args, **kwargs)
@@ -124,7 +127,6 @@ def fetch_with_backoff(fetch_fn, *args, max_retries: int = 5, **kwargs):
             wait = delay * (2 ** (attempt - 1)) + random.uniform(0, 1)
             log.warning("Error de red (%s), reintentando en %.1fs (%d/%d)", exc, wait, attempt, max_retries)
             time.sleep(wait)
-
     raise RuntimeError(f"Agotados los {max_retries} reintentos. Último error: {last_exc}")
 
 
@@ -179,86 +181,27 @@ def get_or_create_player(cur, slug: str, name_guess: str, bio: dict, full_name: 
     return player_id
 
 
-def slugify_tournament(name: str) -> str:
-    """
-    Convierte un nombre de torneo en un slug compatible con Tennis Explorer.
-    Preserva los guiones existentes y los trata como separadores.
-    Ej: "Ottignies-Louvain-la-Neuve challenger" → "ottignies-louvain-la-neuve-challenger"
-    Ej: "US Open" → "us-open"
-    """
-    import unicodedata
-    
-    # Normalizar unicode (quitar acentos)
-    s = unicodedata.normalize('NFKD', name)
-    s = s.encode('ascii', 'ignore').decode('ascii')
-    
-    # Convertir a minúsculas
-    s = s.lower()
-    
-    # Reemplazar guiones con espacios (para unificarlos)
-    s = s.replace('-', ' ')
-    
-    # Reemplazar caracteres especiales (excepto espacios y números) con espacios
-    s = re.sub(r'[^a-z0-9\s]', ' ', s)
-    
-    # Reemplazar espacios múltiples con un solo espacio
-    s = re.sub(r'\s+', ' ', s).strip()
-    
-    # Reemplazar espacios con guiones
-    s = s.replace(' ', '-')
-    
-    # Eliminar guiones duplicados
-    s = re.sub(r'-+', '-', s)
-    
-    # Eliminar guiones al inicio y final
-    s = s.strip('-')
-    
-    return s
-
-def get_or_create_tournament(
-    cur,
-    name: str,
-    slug: Optional[str],
-    year: Optional[int],
-    surface: Optional[str],
-    level: str,
-) -> int:
-    """
-    Busca el torneo por source_tournament_id (slug).
-    Si no tiene slug, lo genera desde el nombre.
-    El slug NO incluye el año: "quimper-challenger" agrupa todas las ediciones.
-    """
+def get_or_create_tournament(cur, name: str, slug: Optional[str], year: Optional[int], surface: Optional[str], level: str) -> int:
     # Si no nos dieron slug, lo generamos
     if not slug:
         slug = slugify_tournament(name)
 
-    # 1. Buscar por slug (ID General)
-    cur.execute(
-        "SELECT id FROM tournaments WHERE source_tournament_id = %s LIMIT 1",
-        (slug,),
-    )
+    # 1. Buscar por slug (ID General canónico)
+    cur.execute("SELECT id FROM tournaments WHERE source_tournament_id = %s LIMIT 1", (slug,))
     row = cur.fetchone()
     if row:
         return row[0]
 
-    # 2. Fallback: buscar por nombre (para compatibilidad con datos antiguos)
+    # 2. Fallback: buscar por nombre y año (para compatibilidad con datos antiguos)
     if year is not None:
-        cur.execute(
-            "SELECT id FROM tournaments WHERE name = %s AND EXTRACT(YEAR FROM start_date) = %s LIMIT 1",
-            (name, year),
-        )
+        cur.execute("SELECT id FROM tournaments WHERE name = %s AND EXTRACT(YEAR FROM start_date) = %s LIMIT 1", (name, year))
     else:
-        cur.execute(
-            "SELECT id FROM tournaments WHERE name = %s AND start_date IS NULL LIMIT 1",
-            (name,),
-        )
+        cur.execute("SELECT id FROM tournaments WHERE name = %s AND start_date IS NULL LIMIT 1", (name,))
+    
     row = cur.fetchone()
     if row:
-        # Actualizar el slug del torneo existente
-        cur.execute(
-            "UPDATE tournaments SET source_tournament_id = %s WHERE id = %s",
-            (slug, row[0]),
-        )
+        # Actualizar el slug del torneo existente para unificarlo de ahora en adelante
+        cur.execute("UPDATE tournaments SET source_tournament_id = %s WHERE id = %s", (slug, row[0]))
         return row[0]
 
     # 3. Crear nuevo
@@ -328,8 +271,7 @@ def fetch_and_parse_worker(row) -> dict:
     try:
         html = fetch_with_backoff(match_detail.fetch_match_detail_html, row.match_id)
         detail = match_detail.parse_match_detail(row.match_id, html)
-        # Pequeña pausa para ser amables con el servidor
-        time.sleep(random.uniform(0.5, 1.0))
+        time.sleep(random.uniform(0.3, 0.8))  # Pequeña pausa amigable por hilo
         return {"row": row, "detail": detail, "error": None}
     except Exception as exc:
         return {"row": row, "detail": None, "error": str(exc)}
@@ -376,9 +318,17 @@ def run_pipeline_for_day(target_date: date) -> tuple[int, str, Optional[str]]:
             try:
                 player_a_id = get_or_create_player(cur, row.player_a_slug, row.player_a_name, detail.player_a_bio, detail.player_a_full_name, getattr(detail, "player_a_photo", None))
                 player_b_id = get_or_create_player(cur, row.player_b_slug, row.player_b_name, detail.player_b_bio, detail.player_b_full_name, getattr(detail, "player_b_photo", None))
-                tournament_id = get_or_create_tournament(cur,row.tournament_name,detail.tournament_slug,detail.tournament_year,detail.surface,row.level_guess)
-                winner_id = decide_winner(player_a_id, player_b_id, row.sets_a, row.sets_b)
                 
+                tournament_id = get_or_create_tournament(
+                    cur, 
+                    row.tournament_name, 
+                    detail.tournament_slug,      # ← El slug canónico
+                    detail.tournament_year,      # ← El año extraído de la URL
+                    detail.surface, 
+                    row.level_guess
+                )
+                
+                winner_id = decide_winner(player_a_id, player_b_id, row.sets_a, row.sets_b)
                 match_id = upsert_match(cur, tournament_id, player_a_id, player_b_id, detail.round_name, detail.is_qualifying, target_date, winner_id, sets_to_jsonb(row.sets_a, row.sets_b), str(row.match_id))
                 
                 upsert_closing_odds(cur, match_id, player_a_id, detail.closing_odds_a)

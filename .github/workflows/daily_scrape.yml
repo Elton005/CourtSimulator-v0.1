@@ -52,7 +52,7 @@ jobs:
   # Job 2: Backfill de jugadores (solo en la actualización de las 06:00 UTC)
   backfill:
     runs-on: ubuntu-latest
-    if: github.event.schedule == '0 6 * * *'
+    if: github.event_name == 'workflow_dispatch' || github.event.schedule == '0 6 * * *'
     timeout-minutes: 120
     
     steps:
