@@ -41,7 +41,6 @@ jobs:
           path: logs/
           retention-days: 7
 
-  # Job 2: Scraping de partidos programados (hoy)
   scrape-upcoming:
     runs-on: ubuntu-latest
     timeout-minutes: 30
@@ -59,12 +58,12 @@ jobs:
       - name: 📦 Install dependencies
         run: pip install -r requirements.txt
 
-      - name: 📅 Scrape today's upcoming matches
+      - name: 📅 Scrape upcoming matches (today + tomorrow)
         env:
           SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
         run: |
-          echo "📅 Scraping partidos programados para hoy"
-          python pipeline_run.py upcoming
+          echo "📅 Scraping partidos programados para hoy + mañana"
+          python pipeline_run.py upcoming --days-ahead 1
 
       - name: 📤 Upload logs
         if: always()

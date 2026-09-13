@@ -1,13 +1,12 @@
 """
 scraper/upcoming.py
-Scrapea los partidos programados para hoy desde /matches/
-Devuelve una lista de partidos con: match_id, jugadores, torneo, hora, cuotas
+Scrapea los partidos programados para HOY y MAÑANA desde /matches/
 """
 import re
 import logging
 from dataclasses import dataclass
 from typing import Optional, List
-from datetime import datetime, date
+from datetime import datetime, date, timedelta
 
 import requests
 from bs4 import BeautifulSoup
@@ -15,10 +14,10 @@ from bs4 import BeautifulSoup
 log = logging.getLogger(__name__)
 
 HEADERS = {
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36"
 }
 
-URL = "https://www.tennisexplorer.com/matches/?type=atp-single"
+BASE_URL = "https://www.tennisexplorer.com/matches/"
 
 
 @dataclass
@@ -31,22 +30,28 @@ class UpcomingMatch:
     tournament_name: str
     tournament_slug: str
     tournament_year: int
-    scheduled_time: str  # "19:00" o "20:30"
+    scheduled_time: str  # "19:00"
     round_name: str
     surface: str
     odds_a: Optional[float] = None
     odds_b: Optional[float] = None
+    match_date: Optional[date] = None
 
 
-def fetch_upcoming_html() -> str:
-    """Descarga la página de partidos de hoy."""
-    resp = requests.get(URL, headers=HEADERS, timeout=15)
+def fetch_upcoming_html(target_date: date) -> str:
+    """Descarga la página de partidos para una fecha específica."""
+    params = {
+        "type": "atp-single",
+        "year": target_date.year,
+        "month": f"{target_date.month:02d}",
+        "day": f"{target_date.day:02d}"
+    }
+    resp = requests.get(BASE_URL, params=params, headers=HEADERS, timeout=15)
     resp.raise_for_status()
     return resp.text
 
 
 def _parse_slug_from_href(href: str) -> str:
-    """Extrae el slug de una URL como '/us-open/2026/atp-men/' → 'us-open'"""
     if not href:
         return "unknown"
     parts = href.strip("/").split("/")
@@ -54,7 +59,6 @@ def _parse_slug_from_href(href: str) -> str:
 
 
 def _parse_year_from_href(href: str) -> Optional[int]:
-    """Extrae el año de una URL como '/us-open/2026/atp-men/' → 2026"""
     if not href:
         return None
     parts = href.strip("/").split("/")
@@ -66,108 +70,97 @@ def _parse_year_from_href(href: str) -> Optional[int]:
     return None
 
 
-def parse_upcoming_matches(html: str) -> List[UpcomingMatch]:
-    """
-    Parsea el HTML de /matches/ y extrae los partidos programados.
-    Solo devuelve partidos que AÚN no tienen resultado (scheduled).
-    """
+def _parse_player_slug(href: str) -> str:
+    if not href:
+        return ""
+    match = re.search(r'/player/([^/]+)/?', href)
+    return match.group(1) if match else ""
+
+
+def parse_upcoming_matches(html: str, target_date: date) -> List[UpcomingMatch]:
+    """Parsea el HTML y extrae solo los partidos que AÚN no tienen resultado."""
     soup = BeautifulSoup(html, "html.parser")
     matches = []
     
-    # Buscamos todas las tablas de resultados
     tables = soup.select("table.result")
     
-    current_tournament = None
-    current_tournament_slug = None
-    current_tournament_year = None
-    current_round = None
-    current_surface = None
-    
     for table in tables:
+        current_tournament = None
+        current_tournament_slug = None
+        current_tournament_year = None
+        current_surface = "unknown"
+        
         rows = table.find_all("tr")
         
         for row in rows:
-            # Fila de cabecera del torneo
-            if row.get("class") and "head" in row.get("class"):
-                tournament_cell = row.find("td", class_="t-name")
-                if tournament_cell:
-                    link = tournament_cell.find("a")
-                    if link:
-                        current_tournament = link.get_text(strip=True)
-                        href = link.get("href", "")
-                        current_tournament_slug = _parse_slug_from_href(href)
-                        current_tournament_year = _parse_year_from_href(href)
-                    
-                    # Extraer ronda y superficie del texto de la cabecera
-                    head_text = row.get_text(" ", strip=True)
-                    
-                    # Buscar superficie
-                    surface_match = re.search(r"\b(hard|clay|grass|indoors|indoor|carpet)\b", head_text, re.IGNORECASE)
-                    current_surface = surface_match.group(1).lower() if surface_match else "unknown"
+            row_classes = row.get("class", [])
+            
+            # 1. Detectar cabecera de torneo
+            if "head" in row_classes:
+                tournament_link = row.find("a", href=True)
+                if tournament_link:
+                    href = tournament_link.get("href", "")
+                    current_tournament = tournament_link.get_text(strip=True)
+                    current_tournament_slug = _parse_slug_from_href(href)
+                    current_tournament_year = _parse_year_from_href(href)
+                
+                # Detectar superficie en el texto de la cabecera
+                row_text = row.get_text(" ", strip=True).lower()
+                if "hard" in row_text: current_surface = "hard"
+                elif "clay" in row_text: current_surface = "clay"
+                elif "grass" in row_text: current_surface = "grass"
+                elif "indoor" in row_text: current_surface = "indoor"
                 continue
             
-            # Fila de partido (tiene id tipo "r10", "r11", etc.)
+            # 2. Detectar fila de partido (id tipo "r10", "s10", etc.)
             row_id = row.get("id", "")
-            if not row_id.startswith("r") or row_id.endswith("b"):
+            if not row_id or not re.match(r"^[rs]\d+[a-z]?$", row_id):
                 continue
             
             try:
-                # Hora programada
+                # Verificar si YA tiene resultado (celdas con números en la clase 'result' o 'score')
+                has_result = False
+                for cell in row.find_all(["td", "th"]):
+                    if "result" in cell.get("class", []) or "score" in cell.get("class", []):
+                        if cell.get_text(strip=True).isdigit():
+                            has_result = True
+                            break
+                
+                if has_result:
+                    continue  # Saltar partidos ya finalizados
+                
+                # Extraer hora
                 time_cell = row.find("td", class_="time")
                 if not time_cell:
                     continue
-                time_text = time_cell.get_text(strip=True).split("\n")[0].strip()
                 
-                # Si la hora es "--:--", es un partido sin hora definida (lo saltamos)
+                time_text = time_cell.get_text(strip=True).split("\n")[0].strip()
                 if time_text == "--:--" or not re.match(r"\d{2}:\d{2}", time_text):
                     continue
                 
-                # Jugadores
-                player_cells = row.find_all("td", class_="t-name")
-                if len(player_cells) < 2:
+                # Extraer jugadores
+                player_links = row.find_all("a", href=re.compile(r'/player/'))
+                if len(player_links) < 2:
                     continue
                 
-                player_a_link = player_cells[0].find("a")
-                player_b_link = player_cells[1].find("a")
+                player_a_name = player_links[0].get_text(strip=True)
+                player_b_name = player_links[1].get_text(strip=True)
+                player_a_slug = _parse_player_slug(player_links[0].get("href", ""))
+                player_b_slug = _parse_player_slug(player_links[1].get("href", ""))
                 
-                if not player_a_link or not player_b_link:
-                    continue
-                
-                player_a_name = player_a_link.get_text(strip=True)
-                player_b_name = player_b_link.get_text(strip=True)
-                
-                # Extraer slug del href del jugador
-                player_a_href = player_a_link.get("href", "")
-                player_b_href = player_b_link.get("href", "")
-                player_a_slug = player_a_href.strip("/").split("/")[-1] if player_a_href else ""
-                player_b_slug = player_b_href.strip("/").split("/")[-1] if player_b_href else ""
-                
-                # Verificar si el partido YA tiene resultado (no es upcoming)
-                result_cell = player_cells[0].find("td", class_="result") or row.find("td", class_="result")
-                # Si hay un número en el resultado, el partido ya se jugó
-                has_result = False
-                for cell in row.find_all("td", class_="result"):
-                    text = cell.get_text(strip=True)
-                    if text and text.isdigit():
-                        has_result = True
-                        break
-                
-                if has_result:
-                    continue  # Saltamos partidos ya finalizados
-                
-                # Enlace al match-detail
-                info_link = row.find("a", title="Click for match detail")
+                # Extraer match_id
+                info_link = row.find("a", href=re.compile(r'/match-detail/'))
                 if not info_link:
                     continue
+                
                 match_href = info_link.get("href", "")
-                match_id_match = re.search(r"id=(\d+)", match_href)
+                match_id_match = re.search(r'id=(\d+)', match_href)
                 if not match_id_match:
                     continue
                 match_id = int(match_id_match.group(1))
                 
-                # Cuotas (si existen)
-                odds_a = None
-                odds_b = None
+                # Extraer cuotas (clase 'course')
+                odds_a, odds_b = None, None
                 course_cells = row.find_all("td", class_="course")
                 if len(course_cells) >= 2:
                     try:
@@ -177,11 +170,8 @@ def parse_upcoming_matches(html: str) -> List[UpcomingMatch]:
                             odds_a = float(odds_a_text)
                         if odds_b_text and odds_b_text != "":
                             odds_b = float(odds_b_text)
-                    except ValueError:
+                    except (ValueError, IndexError):
                         pass
-                
-                # Ronda (la inferimos del contexto o la dejamos vacía)
-                round_name = "Unknown"
                 
                 if not current_tournament:
                     continue
@@ -194,32 +184,49 @@ def parse_upcoming_matches(html: str) -> List[UpcomingMatch]:
                     player_b_slug=player_b_slug,
                     tournament_name=current_tournament,
                     tournament_slug=current_tournament_slug or "unknown",
-                    tournament_year=current_tournament_year or date.today().year,
+                    tournament_year=current_tournament_year or target_date.year,
                     scheduled_time=time_text,
-                    round_name=round_name,
-                    surface=current_surface or "unknown",
+                    round_name="Unknown",
+                    surface=current_surface,
                     odds_a=odds_a,
                     odds_b=odds_b,
+                    match_date=target_date,
                 ))
                 
             except Exception as e:
-                log.debug(f"Error parseando fila: {e}")
+                log.debug(f"Error parseando fila {row_id}: {e}")
                 continue
     
     return matches
 
 
-def run(target_date: Optional[date] = None) -> List[UpcomingMatch]:
-    """Función principal: descarga y parsea los partidos upcoming."""
-    log.info(f"🔍 Scrapeando partidos upcoming desde {URL}")
-    html = fetch_upcoming_html()
-    matches = parse_upcoming_matches(html)
-    log.info(f"✅ Encontrados {len(matches)} partidos upcoming")
-    return matches
+def run(days_ahead: int = 1) -> List[UpcomingMatch]:
+    """
+    Descarga y parsea los partidos upcoming.
+    days_ahead=1 significa: HOY (0) y MAÑANA (1).
+    """
+    all_matches = []
+    
+    for day_offset in range(days_ahead + 1):
+        target_date = date.today() + timedelta(days=day_offset)
+        log.info(f"🔍 Scrapeando partidos para {target_date} (día +{day_offset})")
+        
+        try:
+            html = fetch_upcoming_html(target_date)
+            matches = parse_upcoming_matches(html, target_date)
+            log.info(f"  ✅ Encontrados {len(matches)} partidos para {target_date}")
+            all_matches.extend(matches)
+        except Exception as e:
+            log.error(f"  ❌ Error scrapeando {target_date}: {e}")
+            continue
+    
+    log.info(f"✅ Total: {len(all_matches)} partidos upcoming encontrados")
+    return all_matches
 
 
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO)
-    matches = run()
-    for m in matches[:10]:
-        print(f"{m.scheduled_time} | {m.player_a_name} vs {m.player_b_name} | {m.tournament_name} | {m.odds_a}/{m.odds_b}")
+    # Prueba local: solo hoy y mañana
+    matches = run(days_ahead=1)
+    for m in matches[:5]:
+        print(f"{m.match_date} {m.scheduled_time} | {m.player_a_name} vs {m.player_b_name} | {m.tournament_name}")

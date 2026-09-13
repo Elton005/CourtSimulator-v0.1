@@ -423,14 +423,16 @@ from scraper import upcoming as upcoming_scraper
 
 
 def cmd_upcoming(args: argparse.Namespace) -> int:
-    """Scrapea los partidos programados para hoy y los guarda en la BD."""
+    """Scrapea los partidos programados para hoy y los próximos días."""
     conn = get_connection()
     conn.autocommit = False
     cur = conn.cursor()
     
+    days_ahead = args.days_ahead
+    
     try:
-        matches = upcoming_scraper.run()
-        log.info(f"📅 Procesando {len(matches)} partidos upcoming...")
+        matches = upcoming_scraper.run(days_ahead=days_ahead)
+        log.info(f"📅 Procesando {len(matches)} partidos upcoming (hoy + {days_ahead} días)...")
         
         inserted = 0
         updated = 0
@@ -453,17 +455,17 @@ def cmd_upcoming(args: argparse.Namespace) -> int:
                     match.tournament_year, match.surface, "challenger"
                 )
                 
-                # 3. Construir scheduled_time (hoy + hora)
-                today = date.today()
+                # 3. Construir scheduled_time (fecha + hora)
+                match_date = match.match_date or date.today()
                 try:
                     hour, minute = map(int, match.scheduled_time.split(":"))
-                    scheduled_time = datetime.combine(today, datetime.min.time()).replace(
+                    scheduled_time = datetime.combine(match_date, datetime.min.time()).replace(
                         hour=hour, minute=minute
                     )
                 except Exception:
                     scheduled_time = None
                 
-                # 4. UPSERT del partido (si ya existe, solo actualiza si está "scheduled")
+                # 4. UPSERT del partido
                 cur.execute(
                     """
                     INSERT INTO matches (
@@ -479,7 +481,7 @@ def cmd_upcoming(args: argparse.Namespace) -> int:
                         'tennisexplorer', %s
                     )
                     ON CONFLICT (source, source_match_id) DO UPDATE SET
-                        scheduled_time = COALESCE(%s, matches.scheduled_time),
+                        scheduled_time = COALESCE(EXCLUDED.scheduled_time, matches.scheduled_time),
                         match_status = CASE 
                             WHEN matches.match_status = 'finished' THEN 'finished'
                             ELSE 'scheduled'
@@ -489,9 +491,8 @@ def cmd_upcoming(args: argparse.Namespace) -> int:
                     (
                         tournament_id, player_a_id, player_b_id,
                         match.round_name, round_sort_key(match.round_name),
-                        False, today, scheduled_time,
+                        False, match_date, scheduled_time,
                         str(match.match_id),
-                        scheduled_time,
                     ),
                 )
                 
@@ -602,6 +603,12 @@ def build_parser() -> argparse.ArgumentParser:
 
     # Subcomando: upcoming (partidos programados de hoy)
     p_upcoming = sub.add_parser("upcoming", help="Scrapea los partidos programados para hoy.")
+    p_upcoming.add_argument(
+        "--days-ahead", 
+        type=int, 
+        default=3, 
+        help="Número de días hacia adelante a scrapear (0 = solo hoy, 3 = hoy + 3 días)"
+    )
     p_upcoming.set_defaults(func=cmd_upcoming)
 
     # Subcomando: backfill (enriquecer perfiles de jugadores)
