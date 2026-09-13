@@ -21,8 +21,8 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s | %(levelname)-7s | 
 log = logging.getLogger("backfill-players")
 
 # Configuración de concurrencia
-MAX_WORKERS = 12  # Número de peticiones simultáneas. (10-15 es seguro para no ser bloqueado)
-MIN_DELAY = 0.5   # Pequeña pausa entre lotes para ser amables con el servidor
+MAX_WORKERS = 12  # Número de peticiones simultáneas. (10-15 es seguro)
+MIN_DELAY = 0.5   # Pequeña pausa entre lotes
 MAX_DELAY = 1.5
 
 def get_connection():
@@ -38,9 +38,7 @@ def fetch_and_parse_worker(player_id: int, slug: str) -> dict:
     NO toca la base de datos aquí.
     """
     try:
-        # Pequeña variación aleatoria para no parecer un bot rígido
         time.sleep(random.uniform(0.1, 0.3))
-        
         html = player_profile.fetch_player_profile_html(slug)
         profile_data = player_profile.parse_player_profile(html)
         
@@ -68,12 +66,13 @@ def run_backfill_all(batch_size: int = 500, max_iterations: int = 20):
         cur = conn.cursor()
         
         # Contar jugadores pendientes ANTES de procesar
+        # NOTA: %% se usa para escapar el signo % en psycopg2
         cur.execute(
             """
             SELECT COUNT(*) FROM players p
             JOIN player_aliases pa ON p.id = pa.player_id
             WHERE pa.source = 'tennisexplorer'
-              AND (p.country IS NULL OR p.flag_code IS NULL OR p.photo_url IS NULL OR p.photo_url LIKE '%default-avatar%')
+              AND (p.country IS NULL OR p.flag_code IS NULL OR p.photo_url IS NULL OR p.photo_url LIKE '%%default-avatar%%')
             """
         )
         pending_count = cur.fetchone()[0]
@@ -93,14 +92,14 @@ def run_backfill_all(batch_size: int = 500, max_iterations: int = 20):
             FROM players p
             JOIN player_aliases pa ON p.id = pa.player_id
             WHERE pa.source = 'tennisexplorer'
-              AND (p.country IS NULL OR p.flag_code IS NULL OR p.photo_url IS NULL OR p.photo_url LIKE '%default-avatar%')
+              AND (p.country IS NULL OR p.flag_code IS NULL OR p.photo_url IS NULL OR p.photo_url LIKE '%%default-avatar%%')
             LIMIT %s
             """,
             (batch_size,)
         )
         players_to_update = cur.fetchall()
         cur.close()
-        conn.close() # Cerramos la conexión antes de la fase de red
+        conn.close()
         
         if not players_to_update:
             log.info("✅ No hay más jugadores para procesar en esta iteración.")
@@ -113,13 +112,11 @@ def run_backfill_all(batch_size: int = 500, max_iterations: int = 20):
         results = []
         
         with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
-            # Enviamos todas las tareas al pool
             future_to_player = {
                 executor.submit(fetch_and_parse_worker, pid, slug): (pid, slug) 
                 for pid, slug in players_to_update
             }
             
-            # Recogemos los resultados a medida que se completan
             for future in as_completed(future_to_player):
                 res = future.result()
                 results.append(res)
@@ -191,7 +188,7 @@ def run_backfill_all(batch_size: int = 500, max_iterations: int = 20):
         # Pausa entre lotes para no saturar a Tennis Explorer
         time.sleep(random.uniform(MIN_DELAY, MAX_DELAY))
     
-    return total_updated, False  # No terminado (llegó al máximo de iteraciones)
+    return total_updated, False
 
 
 if __name__ == "__main__":
@@ -210,7 +207,6 @@ if __name__ == "__main__":
         else:
             log.info("⚠️ Se alcanzó el máximo de iteraciones. Ejecuta de nuevo para continuar.")
     else:
-        # Modo simple para pruebas
         log.info(f"🚀 Iniciando backfill simple para {args.limit} jugadores...")
         total, _ = run_backfill_all(batch_size=args.limit, max_iterations=1)
         log.info(f"✅ Backfill simple finalizado. Total actualizado: {total}")
