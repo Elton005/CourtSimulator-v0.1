@@ -25,6 +25,8 @@ import requests
 import pandas as pd
 from bs4 import BeautifulSoup
 from rounds import normalize_round
+from typing import Optional
+
 
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36"
@@ -74,40 +76,82 @@ def fetch_match_detail_html(match_id: int) -> str:
     resp.raise_for_status()
     return resp.text
 
+# Asegúrate de que SURFACE_MAP exista en tu archivo
+SURFACE_MAP = {
+    "hard": "Hard", "clay": "Clay", "grass": "Grass",
+    "indoors": "Indoor", "indoor": "Indoor", "carpet": "Carpet",
+}
+
 
 def parse_header(soup: BeautifulSoup) -> dict:
+    """
+    Extrae la cabecera del partido.
+    NUEVO: Extrae el slug del torneo desde el href del enlace.
+    Ejemplo: href="/us-open/2021/atp-men/" → slug="us-open", year=2021
+    """
     h1 = soup.find('h1', class_='bg')
-    if h1:
-        header_div = h1.find_next_sibling('div')
-        if header_div:
-            header_text = header_div.get_text(separator=" ", strip=True)
-            
-            HEADER_RE = re.compile(
-                r"(\d{2}\.\d{2}\.\d{4})\s*,\s*"
-                r"(\d{2}:\d{2}|--:--)\s*,\s*"
-                r"(.+?)\s*,\s*"
-                r"(.+?)\s*,\s*"
-                r"([a-zA-Z]+)"
-            )
-            
-            match = HEADER_RE.search(header_text)
-            if match:
-                date_str, time_str, tournament, raw_round, surface = match.groups()
-                
-                # ★ NORMALIZACIÓN AQUÍ ★
-                round_canonical, is_qualifying = normalize_round(raw_round)
-                
-                return {
-                    "date_str": date_str,
-                    "time_str": time_str,
-                    "tournament": tournament.strip(),
-                    "round_name": round_canonical,      # ← Valor canónico
-                    "is_qualifying": is_qualifying,     # ← Booleano independiente
-                    "surface": SURFACE_MAP.get(surface.lower().strip(), surface.lower().strip()),
-                }
-    
-    raise ValueError(f"No se encontró la línea de cabecera. Texto: '{header_text}'")
+    if not h1:
+        raise ValueError("No se encontró la etiqueta <h1 class='bg'>")
 
+    header_div = h1.find_next_sibling('div')
+    if not header_div:
+        raise ValueError("No se encontró el div hermano del <h1>")
+
+    header_text = header_div.get_text(separator=" ", strip=True)
+
+    # 1. Extraer Fecha y Hora
+    date_time_match = re.search(
+        r"(\d{2}\.\d{2}\.\d{4})\s*,\s*(\d{2}:\d{2}|--:--)", header_text
+    )
+    if not date_time_match:
+        raise ValueError(f"No se encontró fecha/hora en: '{header_text}'")
+
+    date_str = date_time_match.group(1)
+    time_str = date_time_match.group(2)
+
+    # 2. Extraer el enlace del torneo → slug + año
+    tournament_link = header_div.find('a')
+    tournament_slug = None
+    tournament_year = None
+    raw_tournament = "Unknown Tournament"
+
+    if tournament_link:
+        raw_tournament = tournament_link.get_text(strip=True)
+        href = tournament_link.get('href', '')
+        # Ej: "/us-open/2021/atp-men/" → ["us-open", "2021", "atp-men"]
+        parts = href.strip("/").split("/")
+        if len(parts) >= 2:
+            tournament_slug = parts[0]   # "us-open"
+            try:
+                tournament_year = int(parts[1])  # 2021
+            except ValueError:
+                pass
+
+    # 3. Extraer Superficie
+    rest_of_text = header_text[date_time_match.end():].strip()
+    surface = "Unknown"
+    surface_match = re.search(
+        r"\b(hard|clay|grass|indoors|indoor|carpet)\b",
+        rest_of_text, re.IGNORECASE
+    )
+    if surface_match:
+        surface = surface_match.group(1).lower()
+        rest_of_text = rest_of_text[:surface_match.start()].rstrip(',').strip()
+
+    # 4. Lo que queda es la ronda
+    round_name = rest_of_text.strip() if rest_of_text else "Unknown"
+    is_qualifying = bool(re.search(r"qual|q[\-\._]", round_name, re.IGNORECASE))
+
+    return {
+        "date_str": date_str,
+        "time_str": time_str,
+        "tournament": raw_tournament,
+        "tournament_slug": tournament_slug,       # ← NUEVO
+        "tournament_year": tournament_year,       # ← NUEVO
+        "round_name": round_name,
+        "is_qualifying": is_qualifying,
+        "surface": SURFACE_MAP.get(surface, surface.title()),
+    }
 # Palabras que NUNCA forman parte del nombre de un jugador.
 _NOISE_WORDS = {
     "hard", "clay", "grass", "indoors", "indoor", "carpet",

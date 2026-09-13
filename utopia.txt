@@ -1,18 +1,104 @@
-CourtSimulator/
-│
-├── .env                        # TU CLAVE DE SUPABASE (¡NUNCA subir a GitHub!)
-├── .gitignore                  # Archivos que Git debe ignorar
-├── requirements.txt            # Dependencias del proyecto
-├── pipeline_run.py             # Tu script principal (el que tiene el menú CLI)
-├── backfill_checkpoint.json    # (Opcional) Guarda el progreso local
-│
-├── scraper/                    # Carpeta para todos los módulos de scraping
-│   ├── __init__.py             # Archivo vacío, le dice a Python que esto es un paquete
-│   ├── results.py
-│   ├── match_detail.py
-│   ├── player_profile.py
-│   └── rounds.py
-│
-└── .github/
-    └── workflows/
-        └── daily_scrape.yml    # El "cerebro" que le dirá a la nube cuándo correr
+Lesson 26
+Modal can + comjunciones + adverbios
+
+Too-tambien (al final de la oracion) I can sing Too
+Also-Tambien, ademas(en medio de la oracion) I also can sing(se puede usar pero la forma correcta es I can also sing)
+
+and- y,e (conjuncion) I can dance and also sing ,,, I can dance and sing Too
+
+but- pero,sino sino que ::: I can sing but also dance( detalle de pronunciacion en lo que hemos aprendido but also (barolso pronunciacion americana, bat olso britanica)
+but also- pero tambien, sino tambien 
+
+or- o,ni ::: I can't sing or dance
+
+only- solo solamente I can only dance or sing
+not only
+
+I can't sing but I can dance
+
+I can not only dance but also sing 
+You can't only watch the video but also practice
+
+
+Lesson 27
+Verbo Modal Should(shud)deberia Consejo-recomendacion
+
+She should help her friends
+She shouldn't(shurent) help her friends
+Should she help her friends?
+
+practice
+Where should we go this night?error es tonight
+When should Jhon pay the bill?  bill-cuenta
+we shouldn't smoke     smoke-fumar
+what should we do now?
+helen should eat something healtly      something healtly - aldo saludable
+How often should I practice english?
+
+Lesson 28 
+Can y should con pronombres objeto
+Pronombres objeto reciben la accion
+I-me
+you- you
+he - him
+she - her
+it-it
+we - us 
+they - them
+
+I cant go with her
+You should practice the topic
+you should practice it(explicalo)
+
+practice
+1.I can explain to you      explain to - explicar
+2.You shouldn't buy it(suena baiet)  IMPORTANTE: SI SON VARIAS COSAS ES THEM
+3.Juan can't be with us  (depues de un modal en verbo debe estar en su forma base, por eso el is por be de to be)
+4.Ana should come with them
+5.Can you help me?
+
+
+Leccion 29 - Can/should/pronombres objeto /let
+Let-Dejar,Dejar que/Permitir-permitir que o otro uso es Let's-Let us(vamos a)
+
+estructura: Let+pronombre objeto+verbo base
+
+what is that? ejemplos de usos
+
+1.Deja que el se vaya/dejalo ir
+Let him go
+
+2. Dejame conducir hoy
+let me drive today
+
+3.Dejame ayudarte
+Let me help you
+
+4. Dejanos hacerlo
+Let us do it
+
+5.Ellos deberian dejarnos ir
+They should let us go
+
+6. Yo no puedo permitir que ella se vaya
+I can't let her go
+
+7.puedes dejarme hacerlo otra vez?
+Can you let me do it again?
+
+8.EL profesor nos deja trabajar juntos
+The teacher lets us work together
+
+9.Deberia yo dejarte praticar?
+should I let you pratice?
+
+10.vamos a practicar!
+Let's pratice
+
+
+Lesson 30
+Ejercicio de escritura
+1.Mary is my friend.She lives with her husband and she loves him.They have a small house,but they like it.
+They also have a dog.It's really big.It has a red ball and it plays with it all day.
+Mari doesn't let it play in the house but she let it play in the yard.
+Mari isn't with me today but I see her very often in the office.
