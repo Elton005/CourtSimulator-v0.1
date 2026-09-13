@@ -402,7 +402,7 @@ def cmd_backfill(args: argparse.Namespace) -> int:
         return 2
     log.info("Ejecutando backfill de perfiles (límite=%d)...", args.limit)
     try:
-        backfill_players.run_backfill(limit=args.limit)
+        backfill_players.run_backfill_all(batch_size=args.limit, max_iterations=1)
     except Exception as exc:
         log.error("El backfill falló: %s", exc)
         return 1
