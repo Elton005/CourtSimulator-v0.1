@@ -30,6 +30,8 @@ from dotenv import load_dotenv
 from scraper import results, match_detail
 from scraper.rounds import round_sort_key
 
+from scraper import upcoming as upcoming_scraper
+
 # Importamos backfill_players si existe en la carpeta raíz
 try:
     import backfill_players
@@ -216,21 +218,42 @@ def get_or_create_tournament(cur, name: str, slug: Optional[str], year: Optional
     return cur.fetchone()[0]
 
 
-def upsert_match(cur, tournament_id: int, player_a_id: int, player_b_id: int, round_name: Optional[str], is_qualifying: bool, match_date: date, winner_id: Optional[int], sets: list[dict], source_match_id: str) -> int:
+def upsert_match(cur, tournament_id, player_a_id, player_b_id, round_name, 
+                 is_qualifying, match_date, winner_id, sets, source_match_id) -> int:
     safe_round = round_name or "UNKNOWN"
     round_order = round_sort_key(safe_round)
-
+    
     cur.execute(
         """
-        INSERT INTO matches (tournament_id, player_a_id, player_b_id, round, round_order, is_qualifying, match_date, status, winner_id, sets, source, source_match_id)
-        VALUES (%s, %s, %s, %s, %s, %s, %s, 'finished', %s, %s, 'tennisexplorer', %s)
+        INSERT INTO matches (
+            tournament_id, player_a_id, player_b_id, round, round_order,
+            is_qualifying, match_date, status, match_status, winner_id, sets,
+            source, source_match_id
+        )
+        VALUES (
+            %s, %s, %s, %s, %s,
+            %s, %s, 'finished', 'finished', %s, %s,
+            'tennisexplorer', %s
+        )
         ON CONFLICT (source, source_match_id) DO UPDATE SET
-            tournament_id = EXCLUDED.tournament_id, player_a_id = EXCLUDED.player_a_id, player_b_id = EXCLUDED.player_b_id,
-            round = EXCLUDED.round, round_order = EXCLUDED.round_order, is_qualifying = EXCLUDED.is_qualifying,
-            match_date = EXCLUDED.match_date, winner_id = EXCLUDED.winner_id, sets = EXCLUDED.sets
+            tournament_id = EXCLUDED.tournament_id,
+            player_a_id   = EXCLUDED.player_a_id,
+            player_b_id   = EXCLUDED.player_b_id,
+            round         = EXCLUDED.round,
+            round_order   = EXCLUDED.round_order,
+            is_qualifying = EXCLUDED.is_qualifying,
+            match_date    = EXCLUDED.match_date,
+            status        = 'finished',
+            match_status  = 'finished',   -- ← Transición scheduled → finished
+            winner_id     = EXCLUDED.winner_id,
+            sets          = EXCLUDED.sets
         RETURNING id
         """,
-        (tournament_id, player_a_id, player_b_id, safe_round, round_order, is_qualifying, match_date, winner_id, psycopg2.extras.Json(sets), str(source_match_id)),
+        (
+            tournament_id, player_a_id, player_b_id, safe_round, round_order,
+            is_qualifying, match_date, winner_id, psycopg2.extras.Json(sets),
+            str(source_match_id),
+        ),
     )
     return cur.fetchone()[0]
 
@@ -395,6 +418,125 @@ def cmd_scrape(args: argparse.Namespace) -> int:
     log.info("Resumen final: %d día(s) OK, %d día(s) con error.", processed_days, failed_days)
     return 0 if failed_days == 0 else 1
 
+# Importar el nuevo módulo al inicio del archivo
+from scraper import upcoming as upcoming_scraper
+
+
+def cmd_upcoming(args: argparse.Namespace) -> int:
+    """Scrapea los partidos programados para hoy y los guarda en la BD."""
+    conn = get_connection()
+    conn.autocommit = False
+    cur = conn.cursor()
+    
+    try:
+        matches = upcoming_scraper.run()
+        log.info(f"📅 Procesando {len(matches)} partidos upcoming...")
+        
+        inserted = 0
+        updated = 0
+        
+        for match in matches:
+            try:
+                # 1. Crear/obtener jugadores
+                player_a_id = get_or_create_player(
+                    cur, match.player_a_slug, match.player_a_name,
+                    {}, match.player_a_name, None
+                )
+                player_b_id = get_or_create_player(
+                    cur, match.player_b_slug, match.player_b_name,
+                    {}, match.player_b_name, None
+                )
+                
+                # 2. Crear/obtener torneo
+                tournament_id = get_or_create_tournament(
+                    cur, match.tournament_name, match.tournament_slug,
+                    match.tournament_year, match.surface, "challenger"
+                )
+                
+                # 3. Construir scheduled_time (hoy + hora)
+                today = date.today()
+                try:
+                    hour, minute = map(int, match.scheduled_time.split(":"))
+                    scheduled_time = datetime.combine(today, datetime.min.time()).replace(
+                        hour=hour, minute=minute
+                    )
+                except Exception:
+                    scheduled_time = None
+                
+                # 4. UPSERT del partido (si ya existe, solo actualiza si está "scheduled")
+                cur.execute(
+                    """
+                    INSERT INTO matches (
+                        tournament_id, player_a_id, player_b_id, round, round_order,
+                        is_qualifying, match_date, scheduled_time, status, 
+                        match_status, winner_id, sets,
+                        source, source_match_id
+                    )
+                    VALUES (
+                        %s, %s, %s, %s, %s,
+                        %s, %s, %s, 'scheduled',
+                        'scheduled', NULL, '[]'::jsonb,
+                        'tennisexplorer', %s
+                    )
+                    ON CONFLICT (source, source_match_id) DO UPDATE SET
+                        scheduled_time = COALESCE(%s, matches.scheduled_time),
+                        match_status = CASE 
+                            WHEN matches.match_status = 'finished' THEN 'finished'
+                            ELSE 'scheduled'
+                        END
+                    RETURNING (xmax = 0) AS inserted
+                    """,
+                    (
+                        tournament_id, player_a_id, player_b_id,
+                        match.round_name, round_sort_key(match.round_name),
+                        False, today, scheduled_time,
+                        str(match.match_id),
+                        scheduled_time,
+                    ),
+                )
+                
+                result = cur.fetchone()
+                if result and result[0]:
+                    inserted += 1
+                else:
+                    updated += 1
+                
+                # 5. Guardar cuotas de apertura (solo si no existen)
+                if match.odds_a and match.odds_a > 1.0:
+                    cur.execute(
+                        """
+                        UPDATE matches 
+                        SET opening_odds_a = COALESCE(opening_odds_a, %s)
+                        WHERE source = 'tennisexplorer' AND source_match_id = %s
+                        """,
+                        (match.odds_a, str(match.match_id))
+                    )
+                if match.odds_b and match.odds_b > 1.0:
+                    cur.execute(
+                        """
+                        UPDATE matches 
+                        SET opening_odds_b = COALESCE(opening_odds_b, %s)
+                        WHERE source = 'tennisexplorer' AND source_match_id = %s
+                        """,
+                        (match.odds_b, str(match.match_id))
+                    )
+                
+                conn.commit()
+                
+            except Exception as exc:
+                conn.rollback()
+                log.error(f"  ❌ Error partido {match.match_id}: {exc}")
+        
+        log.info(f"✅ Upcoming completado: {inserted} nuevos, {updated} actualizados")
+        return 0
+        
+    except Exception as exc:
+        log.error(f"❌ Error en cmd_upcoming: {exc}")
+        return 1
+    finally:
+        cur.close()
+        conn.close()    
+
 
 def cmd_backfill(args: argparse.Namespace) -> int:
     if not HAS_BACKFILL:
@@ -445,18 +587,29 @@ def _parse_date(s: str) -> date:
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(prog="pipeline_run", description="CourtSimulator — pipeline de scraping y backfill de tenis.", formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser = argparse.ArgumentParser(
+        prog="pipeline_run",
+        description="CourtSimulator — pipeline de scraping y backfill de tenis.",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
     sub = parser.add_subparsers(dest="command", required=True)
 
+    # Subcomando: scrape (resultados finalizados)
     p_scrape = sub.add_parser("scrape", help="Scrapea uno o varios días (con checkpoint resumible).")
     p_scrape.add_argument("start", type=_parse_date, help="Fecha de inicio (YYYY-MM-DD).")
     p_scrape.add_argument("end", nargs="?", type=_parse_date, default=None, help="Fecha de fin (YYYY-MM-DD).")
     p_scrape.set_defaults(func=cmd_scrape)
 
+    # Subcomando: upcoming (partidos programados de hoy)
+    p_upcoming = sub.add_parser("upcoming", help="Scrapea los partidos programados para hoy.")
+    p_upcoming.set_defaults(func=cmd_upcoming)
+
+    # Subcomando: backfill (enriquecer perfiles de jugadores)
     p_back = sub.add_parser("backfill", help="Enriquece perfiles de jugadores con datos de /player/{slug}/.")
     p_back.add_argument("--limit", type=int, default=100, help="Número máximo de jugadores a procesar.")
     p_back.set_defaults(func=cmd_backfill)
 
+    # Subcomando: status (ver últimas corridas)
     p_status = sub.add_parser("status", help="Muestra las últimas corridas registradas.")
     p_status.add_argument("--limit", type=int, default=10, help="Número de corridas a mostrar.")
     p_status.set_defaults(func=cmd_status)
