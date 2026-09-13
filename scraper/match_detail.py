@@ -69,11 +69,10 @@ def fetch_match_detail_html(match_id: int) -> str:
     resp.raise_for_status()
     return resp.text
 
-
 def parse_header(soup: BeautifulSoup) -> dict:
     """
     Extrae la cabecera del partido. 
-    NUEVO: Extrae el slug y el año directamente del href del enlace del torneo.
+    AHORA COMPATIBLE con 'Today', 'Tomorrow' y fechas numéricas (DD.MM.YYYY).
     """
     h1 = soup.find('h1', class_='bg')
     if not h1:
@@ -85,16 +84,29 @@ def parse_header(soup: BeautifulSoup) -> dict:
     
     header_text = header_div.get_text(separator=" ", strip=True)
     
-    # 1. Extraer Fecha y Hora
-    date_time_match = re.search(r"(\d{2}\.\d{2}\.\d{4})\s*,\s*(\d{2}:\d{2}|--:--)", header_text)
+    # 1. Extraer Fecha (Today, Tomorrow o DD.MM.YYYY) y Hora
+    date_time_match = re.search(
+        r"(Today|Tomorrow|\d{2}\.\d{2}\.\d{4})\s*,\s*(\d{2}:\d{2}|--:--)", 
+        header_text, 
+        re.IGNORECASE
+    )
     if not date_time_match:
         raise ValueError(f"No se encontró fecha/hora en el texto: '{header_text}'")
     
-    date_str = date_time_match.group(1)
+    date_str_raw = date_time_match.group(1)
     time_str = date_time_match.group(2)
-    rest_of_text = header_text[date_time_match.end():].strip()
     
-    # 2. NUEVO: Extraer el enlace del torneo para obtener el slug y el año
+    # Normalizar la fecha a formato YYYY-MM-DD para la base de datos
+    if date_str_raw.lower() == 'today':
+        date_str = datetime.date.today().isoformat()
+    elif date_str_raw.lower() == 'tomorrow':
+        date_str = (datetime.date.today() + datetime.timedelta(days=1)).isoformat()
+    else:
+        # Convertir DD.MM.YYYY a YYYY-MM-DD
+        d, m, y = date_str_raw.split('.')
+        date_str = f"{y}-{m}-{d}"
+    
+    # 2. Extraer el enlace del torneo para obtener el slug y el año
     tournament_link = header_div.find('a')
     tournament_slug = None
     tournament_year = None
@@ -103,7 +115,6 @@ def parse_header(soup: BeautifulSoup) -> dict:
     if tournament_link:
         raw_tournament = tournament_link.get_text(strip=True)
         href = tournament_link.get('href', '')
-        # Ejemplo de href: "/us-open/2021/atp-men/"
         parts = href.strip("/").split("/")
         if len(parts) >= 2:
             tournament_slug = parts[0]
@@ -112,31 +123,26 @@ def parse_header(soup: BeautifulSoup) -> dict:
             except ValueError:
                 pass
     
-    # 3. Extraer Superficie
+    # 3. Extraer Superficie y Ronda del texto restante
+    rest_of_text = header_text[date_time_match.end():].strip()
     surface = "unknown"
     surface_match = re.search(r"\b(hard|clay|grass|indoors|indoor|carpet)\b", rest_of_text, re.IGNORECASE)
     if surface_match:
         surface = surface_match.group(1).lower()
         rest_of_text = rest_of_text[:surface_match.start()].strip().rstrip(',')
     
-    # 4. Separar Torneo y Ronda (fallback por si el link no era suficiente)
-    if ',' in rest_of_text:
-        last_comma_idx = rest_of_text.rfind(',')
-        round_name = rest_of_text[last_comma_idx+1:].strip()
-    else:
-        round_name = "Unknown"
-    
+    round_name = rest_of_text.strip() if rest_of_text else "Unknown"
     is_qualifying = bool(re.search(r"qual|q[\-\._]", round_name, re.IGNORECASE))
     
     return {
         "date_str": date_str,
         "time_str": time_str,
-        "tournament": raw_tournament, # Usamos el nombre limpio del link
+        "tournament": raw_tournament,
         "tournament_slug": tournament_slug,
         "tournament_year": tournament_year,
         "round_name": round_name,
         "is_qualifying": is_qualifying,
-        "surface": SURFACE_MAP.get(surface, surface),
+        "surface": SURFACE_MAP.get(surface, surface.title()),
     }
 
 
