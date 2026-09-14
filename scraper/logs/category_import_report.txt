@@ -1,0 +1,19 @@
+REPORTE DE IMPORTACIÓN DE CATEGORÍAS
+Fecha: 2026-09-14 16:26:27
+============================================================
+
+Resumen:
+  • Actualizados: 100
+  • No encontrados: 0
+  • Errores: 0
+
+Distribución de categorías:
+  • ch100: 598
+  • ch50: 312
+  • atp250: 147
+  • atp500: 87
+  • other: 62
+  • 1000: 54
+  • gs: 24
+
+Torneos sin categoría: 296

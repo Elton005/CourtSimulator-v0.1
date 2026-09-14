@@ -1,0 +1,101 @@
+tournament_id,name,source_tournament_id,surface,level,category,year,total_matches,manual_flag
+1221,Astana 5 challenger,astana-5-challenger,hard,challenger,ch50,2025,49,
+1097,Bangalore challenger,bangalore-challenger,hard,challenger,ch100,2025,49,
+1231,Barranquilla chall.,barranquilla-chall,hard,main,ch100,2025,49,
+1156,Bogotá 5 challenger,bogota-5-challenger,clay,challenger,ch50,2025,49,investigado
+1176,Bratislava 2 challenger,bratislava-2-challenger,clay,challenger,ch100,2025,49,
+1063,Buenos Aires 3 challenger,buenos-aires-3-challenger,clay,challenger,ch100,2025,49,investigado
+1053,Canberra 2 challenger,canberra-2-challenger,hard,challenger,ch100,2025,49,
+1246,Cassis challenger,cassis-challenger,hard,challenger,ch100,2025,49,
+1259,Columbus 3 challenger,columbus-3-challenger,indoor,challenger,ch100,2025,49,
+1242,Como challenger,como-challenger,clay,challenger,ch100,2025,49,
+1151,Francavilla challenger,francavilla-challenger,clay,challenger,ch100,2025,49,investigado
+1166,French Open,french-open,clay,main,gs,2025,239,
+1247,Genoa challenger,genoa-challenger,clay,challenger,ch100,2025,49,
+1298,Hamburg challenger,hamburg-challenger,indoor,challenger,ch50,2025,49,
+1171,Heilbronn challenger,heilbronn-challenger,clay,challenger,ch100,2025,49,VERIFICAR
+1224,Luedenscheid challenger,luedenscheid-challenger,clay,challenger,ch100,2025,49,investigado
+1245,Mallorca challenger,mallorca-challenger,hard,challenger,atp250,2025,49,
+1118,Neapol challenger,neapol-challenger,clay,challenger,ch100,2025,49,investigado
+1060,Nottingham 5 challenger,nottingham-5-challenger,indoor,challenger,ch100,2025,49,investigado
+1061,Oeiras 5 challenger,oeiras-5-challenger,indoor,challenger,ch100,2025,49,
+1065,Oeiras 6 challenger,oeiras-6-challenger,indoor,challenger,ch100,2025,49,
+1152,Prague 2 challenger,prague-2-challenger,clay,challenger,ch100,2025,49,
+1141,Rome 2 challenger,rome-2-challenger,clay,challenger,ch50,2025,49,
+1137,San Luis Potosi chall.,san-luis-potosi-chall,clay,main,ch100,2025,49,
+1144,San Miguel de Tucuman challenger,san-miguel-de-tucuman-challenger,clay,challenger,ch50,2025,49,
+1249,Sevilla challenger,sevilla-challenger,clay,challenger,ch100,2025,49,investigado
+1250,Shanghai challenger,shanghai-challenger,hard,challenger,ch100,2025,49,
+1260,St. Tropez challenger,st-tropez-challenger,hard,challenger,ch100,2025,49,
+1138,Tallahassee chall.,tallahassee-chall,clay,main,ch100,2025,49,
+1234,Todi challenger,todi-challenger,clay,challenger,ch100,2025,49,
+1220,Toronto,toronto,hard,main,1000,2025,111,
+1283,Valencie challenger,valencie-challenger,clay,challenger,ch100,2025,49,investigado
+1244,Zhangjiagang challenger,zhangjiagang-challenger,hard,challenger,ch100,2025,49,
+1552,Astana 4 challenger,astana-4-challenger,hard,challenger,ch50,2026,49,investigado
+1499,Asuncion 2 challenger,asuncion-2-challenger,clay,challenger,ch100,2026,49,
+1564,Augsburg challenger,augsburg-challenger,clay,challenger,ch50,2026,49,investigado
+1465,Bangalore 2 challenger,bangalore-2-challenger,hard,challenger,ch50,2026,49,investigado
+1474,Bangalore 3 challenger,bangalore-3-challenger,hard,challenger,ch50,2026,49,investigado
+1347,Bangalore challenger,bangalore-challenger,hard,challenger,ch100,2026,49,investigado
+1517,Bogotá 5 challenger,bogota-5-challenger,clay,challenger,ch100,2026,49,
+1510,Boodles Tennis Challenge,boodles-tennis-challenge,grass,main,exhibition,2026,12,
+1491,Bratislava 2 challenger,bratislava-2-challenger,clay,challenger,ch50,2026,49,
+1382,Brisbane 3 challenger,brisbane-3-challenger,hard,challenger,ch100,2026,49,
+1553,Brownsburg challenger,brownsburg-challenger,hard,challenger,ch100,2026,49,investigado
+1356,Buenos Aires 3 challenger,buenos-aires-3-challenger,clay,challenger,ch50,2026,49,
+1348,Canberra 2 challenger,canberra-2-challenger,hard,challenger,ch100,2026,49,
+1561,Cancun challenger,cancun-challenger,hard,challenger,ch100,2026,39,investigado
+1573,Cassis challenger,cassis-challenger,hard,challenger,ch100,2026,46,investigado
+1492,Cattolica challenger,cattolica-challenger,clay,challenger,ch100,2026,49,investigado
+1568,Como challenger,como-challenger,clay,challenger,ch100,2026,49,investigado
+1500,Dublin challenger,dublin-challenger,grass,challenger,ch100,2026,49,investigado
+1461,Francavilla challenger,francavilla-challenger,clay,challenger,ch100,2026,47,investigado
+1477,French Open,french-open,clay,main,gs,2026,239,
+1574,Genoa challenger,genoa-challenger,clay,challenger,ch100,2026,46,VERIFICAR
+1554,Hamburg challenger,hamburg-challenger,indoor,challenger,atp500,2026,49,
+1485,Heilbronn challenger,heilbronn-challenger,clay,challenger,ch100,2026,49,VERIFICAR
+1489,Hertogenbosch,hertogenbosch,grass,main,atp250,2026,39,
+1349,Hong Kong ATP,hong-kong-atp,hard,main,atp250,2026,39,
+1511,Hurlingham - exhibition,hurlingham-exhibition,grass,main,exhibition,2026,6,
+1354,Incheon - exhibition,incheon-exhibition,indoor,main,exhibition,2026,1,
+1476,Istanbul 4 challenger,istanbul-4-challenger,clay,challenger,ch100,2026,49,VERIFICAR
+1549,Istanbul 5 challenger,istanbul-5-challenger,hard,challenger,ch100,2026,49,VERIFICAR
+1565,Kingston 2 challenger,kingston-2-challenger,hard,challenger,ch100,2026,49,investigado
+1557,Kingston challenger,kingston-challenger,hard,challenger,ch100,2026,49,investigado
+1360,Kooyong - exh.,kooyong-exh,hard,main,exhibition,2026,8,
+1520,Liege challenger,liege-challenger,clay,challenger,ch50,2026,49,investigado
+1572,Mallorca challenger,mallorca-challenger,hard,challenger,atp250,2026,49,
+1420,Neapol challenger,neapol-challenger,clay,challenger,ch100,2026,49,investigado
+1351,Nottingham 5 challenger,nottingham-5-challenger,indoor,challenger,ch50,2026,49,
+1362,Oeiras 5 challenger,oeiras-5-challenger,indoor,challenger,ch100,2026,49,VERIFICAR
+1365,Oeiras 6 challenger,oeiras-6-challenger,indoor,challenger,ch100,2026,49,VERIFICAR
+1501,Parma 3 challenger,parma-3-challenger,clay,challenger,ch50,2026,49,
+1576,Phan Thiet 3 challenger,phan-thiet-3-challenger,hard,challenger,ch50,2026,49,
+1580,Phan Thiet 4 challenger,phan-thiet-4-challenger,hard,challenger,ch50,2026,25,
+1551,Plovdiv 2 challenger,plovdiv-2-challenger,clay,challenger,ch50,2026,49,investigado
+1569,Plovdiv 3 challenger,plovdiv-3-challenger,clay,challenger,ch50,2026,49,investigado
+1507,Plovdiv challenger,plovdiv-challenger,clay,challenger,ch50,2026,49,investigado
+1570,Porto 2 challenger,porto-2-challenger,clay,challenger,ch100,2026,49,VERIFICAR
+1558,Prague 2 challenger,prague-2-challenger,clay,challenger,ch50,2026,49,
+1562,Quebec City challenger,quebec-city-challenger,hard,challenger,ch100,2026,39,investigado
+1498,Queen's Club,queen-s-club,grass,main,atp500,2026,43,
+1515,Quito challenger,quito-challenger,clay,challenger,ch50,2026,46,investigado
+1566,Roehampton 2 challenger,roehampton-2-challenger,hard,challenger,ch50,2026,49,investigado
+1560,Roehampton challenger,roehampton-challenger,hard,challenger,ch50,2026,37,investigado
+1449,Rome 2 challenger,rome-2-challenger,clay,challenger,ch100,2026,49,
+1398,Saint Brieuc challenger,saint-brieuc-challenger,indoor,challenger,ch100,2026,49,investigado
+1543,Samsun challenger,samsun-challenger,hard,challenger,ch50,2026,49,investigado
+1428,San Luis Potosi chall.,san-luis-potosi-chall,clay,main,ch100,2026,49,
+1495,San Miguel de Tucuman challenger,san-miguel-de-tucuman-challenger,clay,challenger,ch50,2026,49,investigado
+1421,Sao Paulo 2 challenger,sao-paulo-2-challenger,clay,challenger,ch100,2026,49,
+1577,Sevilla challenger,sevilla-challenger,clay,challenger,ch100,2026,46,investigado
+1578,Shanghai challenger,shanghai-challenger,hard,challenger,1000,2026,43,
+1559,Sion challenger,sion-challenger,clay,challenger,ch50,2026,49,investigado
+1445,Tallahassee chall.,tallahassee-chall,clay,main,ch100,2026,49,
+1555,Todi challenger,todi-challenger,clay,challenger,ch100,2026,49,investigado
+1579,Tulln challenger,tulln-challenger,clay,challenger,ch100,2026,46,investigado
+1432,Ultimate Tennis Showdown,ultimate-tennis-showdown,hard,main,exhibition,2026,16,
+1345,United Cup,united-cup,hard,main,exhibition,2026,25,
+1471,Valencie challenger,valencie-challenger,clay,challenger,ch100,2026,39,investigado
+1571,Zhangjiagang challenger,zhangjiagang-challenger,hard,challenger,ch100,2026,49,investigado
