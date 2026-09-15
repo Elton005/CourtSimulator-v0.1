@@ -1,10 +1,35 @@
-# Archivos compilados de Python
-__pycache__/
-*.pyc
-*.pyo
-
-# Estado local del backfill (no sube a la nube)
-backfill_checkpoint.json
-
 # Variables de entorno
 .env
+.env.local
+.env.*.local
+
+# Logs
+logs/
+*.log
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+venv/
+env/
+ENV/
+.venv
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Temp files
+*.tmp
+*.temp
+checkpoint.json

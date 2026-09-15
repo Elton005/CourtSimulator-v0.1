@@ -2,10 +2,11 @@ name: 🎾 CourtSimulator Daily Update
 
 on:
   schedule:
-    - cron: '0 */6 * * *'
+    - cron: '0 */6 * * *'  # Cada 6 horas
   workflow_dispatch:
 
 jobs:
+  # Job 1: Scraping de resultados finalizados
   scrape-results:
     runs-on: ubuntu-latest
     timeout-minutes: 60
@@ -28,17 +29,17 @@ jobs:
           SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
         run: |
           YESTERDAY=$(date -d "yesterday" +%Y-%m-%d)
-          echo "📊 Scraping resultados finalizados para $YESTERDAY"
           python pipeline_run.py scrape $YESTERDAY
 
       - name: 📤 Upload logs
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: scrape-results-logs-${{ github.run_number }}
+          name: scrape-results--logs-${{ github.run_number }}
           path: logs/
           retention-days: 7
 
+  # Job 2: Scraping de partidos programados
   scrape-upcoming:
     runs-on: ubuntu-latest
     timeout-minutes: 30
@@ -56,12 +57,10 @@ jobs:
       - name: 📦 Install dependencies
         run: pip install -r requirements.txt
 
-      - name: 📅 Scrape upcoming matches (Today + Tomorrow)
+      - name: 📅 Scrape today's upcoming matches
         env:
           SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
-        run: |
-          echo "📅 Scraping partidos programados para hoy y mañana..."
-          python pipeline_run.py upcoming
+        run: python pipeline_run.py upcoming
 
       - name: 📤 Upload logs
         if: always()
@@ -71,6 +70,7 @@ jobs:
           path: logs/
           retention-days: 7
 
+  # Job 3: Backfill de jugadores (solo 6 AM)
   backfill:
     runs-on: ubuntu-latest
     if: github.event.schedule == '0 6 * * *' || github.event_name == 'workflow_dispatch'
@@ -94,6 +94,7 @@ jobs:
           SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
         run: python pipeline_run.py backfill --limit 500
 
+  # Job 4: Notificación a Telegram
   notify:
     runs-on: ubuntu-latest
     needs: [scrape-results, scrape-upcoming]
@@ -117,9 +118,4 @@ jobs:
           SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHANNEL_ID: ${{ secrets.TELEGRAM_CHANNEL_ID }}
-        run: |
-          if [ -z "$SUPABASE_DB_URL" ]; then
-            echo "❌ ERROR: SUPABASE_DB_URL no está configurada."
-            exit 1
-          fi
-          python scraper/notifications.py
+        run: python scraper/notifications.py
