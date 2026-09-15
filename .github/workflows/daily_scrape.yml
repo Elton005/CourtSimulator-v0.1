@@ -29,7 +29,7 @@ jobs:
           SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
         run: |
           YESTERDAY=$(date -d "yesterday" +%Y-%m-%d)
-          python pipeline_run.py scrape $YESTERDAY
+          python scrapping/pipeline_run.py scrape $YESTERDAY
 
       - name: 📤 Upload logs
         if: always()
@@ -60,7 +60,7 @@ jobs:
       - name: 📅 Scrape today's upcoming matches
         env:
           SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
-        run: python pipeline_run.py upcoming
+        run: python scrapping / pipeline_run.py upcoming
 
       - name: 📤 Upload logs
         if: always()
@@ -92,7 +92,7 @@ jobs:
       - name: 👤 Backfill player profiles
         env:
           SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
-        run: python pipeline_run.py backfill --limit 500
+        run: python scrapping/pipeline_run.py backfill --limit 500
 
   # Job 4: Notificación a Telegram
   notify:
@@ -118,4 +118,4 @@ jobs:
           SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHANNEL_ID: ${{ secrets.TELEGRAM_CHANNEL_ID }}
-        run: python scraper/notifications.py
+        run: python scrapping/scraper/notifications.py
