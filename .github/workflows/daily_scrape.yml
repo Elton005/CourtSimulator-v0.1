@@ -60,7 +60,7 @@ jobs:
       - name: 📅 Scrape today's upcoming matches
         env:
           SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
-        run: python scrapping / pipeline_run.py upcoming
+        run: python scrapping/pipeline_run.py upcoming
 
       - name: 📤 Upload logs
         if: always()
